@@ -1,0 +1,211 @@
+---
+title: "Untitled"
+output: pdf_document
+date: "2024-12-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Librerias
+library('MALDIquant')
+library('MALDIquantForeign')
+library(parallel)
+library(tidyverse)
+```
+
+
+```{r Ruta donde se encuentran los espectros}
+# Ruta madre donde se encuentran todos los espectros (según sale del MALDI-TOF)
+# No se incluyen los datos originales debido a que no están anonimizados. Los datos ya preprocesados se incluyen en la carpeta "trabajo"
+ruta_hgmc <- "./2024/"
+```
+
+```{r Extraer los datos de los espectros}
+# Iterar sobre las ubicaciones en la ruta
+for (i in list.files(ruta_hgmc)) {
+  for (j in list.files(paste0(ruta_hgmc, "/", i))) {
+    for (k in list.files(paste0(ruta_hgmc, "/", i, "/", j))) {
+      for (l in list.files(paste0(ruta_hgmc, "/", i, "/", j, "/", k))) {
+        if (file.info(paste0(ruta_hgmc, "/", i, "/", j, "/", k, "/", l))$isdir) {
+          posicion <- sub(".*(-[A-Z][0-9])_.*", "\\1", l)
+          if (nchar(posicion) == 3 && grepl("-[A-Z][0-9]", posicion)) {
+            picos <- NULL
+            masas <- NULL
+            tryCatch({
+              for (m in list.files(paste0(ruta_hgmc, "/", i, "/", j, "/", k, "/", l, "/Q1/P1"), pattern = "AcquireSpotResult_CleaningResultSpectrum.*\\.txt", full.names = TRUE)) {
+                picos <- read.table(m, sep = "/", header = TRUE, fill = TRUE)
+              }
+              for (n in list.files(paste0(ruta_hgmc, "/", i, "/", j, "/", k, "/", l, "/Q1/P1"), pattern = "AcquireSpotResult_SPMasses.*\\.txt", full.names = TRUE)) {
+                masas <- read.table(n, sep = "/", header = TRUE, fill = TRUE)
+              }
+              espectro <- data.frame(masas, picos)
+              write.csv(espectro, file = paste0("./preprocesados/", k, posicion, ".txt"), row.names = FALSE)
+            }, warning = function(w) {
+              message("Advertencia en archivo ", k, posicion, ": ", conditionMessage(w))
+            }, error = function(e) {
+              message("Error en archivo ", k, posicion, ": ", conditionMessage(e))
+            })
+          }
+        }
+      }
+    }
+  }
+}
+
+```
+
+```{r Extracción de los metadatos}
+metadatos <- read.csv("./metadatos/2024-09 - Data export.csv", sep = ";", header = T)
+metadatos <- rbind.data.frame(metadatos, read.csv("./metadatos/2024-10 - Data export.csv", sep = ";", header = T))
+metadatos <- rbind.data.frame(metadatos, read.csv("./metadatos/2024-11 - Data export.csv", sep = ";", header = T))
+metadatos <- rbind.data.frame(metadatos, read.csv("./metadatos/2024-12 - Data export.csv", sep = ";", header = T))
+metadatos$id <- paste(metadatos$ID.portaobjetos, metadatos$Posición, sep = "-")
+write.csv(metadatos, "./metadatos/metadatos_conjuntos.csv", row.names = F)
+```
+
+
+# Preprocesado de los datos de los espectros de MALDI-TOF
+
+```{r Preprocesado de los datos. Definición de la función}
+# ¡¡¡Vamos a usar un procesamiento en paralelo!!!
+
+### Primero definiremos la función de preprocesado ###
+### Función de preprocesado de los datos de los espectros ###
+preprocesado <- function(archivo){
+  # Importamos el espectro
+  espectro <- import(file.path(paste0(entrada,archivo)), verbose = FALSE)
+  # Estabilizamos la varianza
+  espectro <- transformIntensity(espectro, method="sqrt")
+  # Suavizamos el espectro
+  espectro = smoothIntensity(espectro, method="SavitzkyGolay", halfWindowSize=10)
+  # Eliminamos la línea basal
+  espectro = removeBaseline(espectro, method="SNIP", iterations=20)
+  # Normalizamos la intensidad
+  espectro = calibrateIntensity(espectro, method="PQN")
+  # Seleccionamos el rango m/z deseado
+  espectro = trim(espectro[[1]], range=c(2000,20000))
+  
+  # Para cada una de las relaciones m/z (masa/carga), calculamos la media de las 
+  # intensidades medidas y las guardamos en un nuevo archivo 
+  y <- data.frame(round(espectro@mass,0),espectro@intensity)
+  colnames(y) <- c("masa", "intensidad")
+  z <- aggregate(. ~ masa, y, mean)[2]
+  rownames(z) <- unique(y[,1])
+  write.csv(z, file=paste0(salida,archivo))
+}
+```
+
+
+```{r Núcleos del procesador}
+# Cantidad de núcleos del procesador que vamos a usar en el cluster 
+n.cores <- round(detectCores() / 2)
+n.cores
+```
+
+```{r}
+# Creamos desde la base de datos que contiene las etiquetas un listado de 
+# los archivos de espectros filtrados
+archivos_metadatos <- paste0(c(metadatos$id), ".txt")
+
+```
+
+
+
+```{r Preprocesado de los datos, cache=TRUE, results='hide'}
+# Rutas para los archivos que vamos a procesar
+entrada <- "./preprocesados/"
+salida <- "./normalizados/"
+
+archivos <- archivos_metadatos[archivos_metadatos%in%list.files(entrada)]
+archivos <- archivos[!archivos%in%list.files(salida)]
+
+# Configuramos el cluster de computación en paralelo
+# Creación del cluster
+cl <- makeCluster(n.cores)
+
+# Llamar las librerías en los demás núcleos
+clusterCall(cl, function() c(library(MALDIquant), library(MALDIquantForeign)))
+# Llamamos los objetos que vamos a usar en cada uno de los núcleos
+clusterExport(cl, c('entrada', 'salida', 'preprocesado', 'archivos'))
+
+# Ejecutamos el preprocesado en paralelo en todos los núcleos del cluster 
+preprocesado_paralelo <- parSapply(cl = cl,      # Cluster
+                                   archivos,     # vector a recorrer
+                                   preprocesado
+                                   )
+
+# Cerramos el cluster
+stopCluster(cl)
+```
+
+
+Una vez preprocesados los datos, normalizados, etc. vamos a importarlos a un `data.frame` y a unirlos con las etiquetas correspondientes 
+
+```{r Importación de los archivos de datos preprocesados a un data.frame}
+# Cargar librerías necesarias (si no están instaladas)
+library(tidyverse)
+
+# Rutas para los archivos que vamos a procesar
+entrada <- "./normalizados/"
+
+# Sacamos una lista de los archivos que contiene  la carpeta
+#nombre_archivos <- metadatos$id
+nombre_archivos <-gsub(".txt", "", list.files(entrada))
+
+# Definimos el nombre de las columnas para el data.frame resultante
+colnames_objetivo <- c("id", c(seq(2000,20000)))
+
+# Función para procesar un archivo individual
+procesar_archivo <- function(archivo) {
+  ruta_entrada <- paste0(entrada, archivo, ".txt")
+  datos <- read.table(ruta_entrada, header = TRUE, sep = ",")
+  
+  # Transponer y agregar el ID
+  datos_transpuestos <- data.frame(t(datos[, -1]))
+  datos_transpuestos <- cbind(archivo, datos_transpuestos)
+  colnames(datos_transpuestos) <- c("id", c(datos[,1]))
+  
+  # Añadir columnas faltantes y convertir a numérico
+  datos_transpuestos[colnames_objetivo[!(colnames_objetivo %in% names(datos_transpuestos))]] <- 0
+  datos_transpuestos[, -1] <- as.numeric(datos_transpuestos[, -1])
+  
+  return(datos_transpuestos)
+}
+
+# Aplicar la función a todos los archivos
+intensidades_hgmc <- map_dfr(nombre_archivos, procesar_archivo)
+save(intensidades_hgmc, file="./trabajo/intensidades_hgmc.Rdata")
+```
+
+
+```{r Unión de los dataframes filtrados de intensidades y de datos adicionales}
+# Data.frame final
+datos_trabajo_HGMC <- merge(metadatos[,c(46,47,60)], intensidades_hgmc, by.x = "id",  by.y = "id")
+datos_trabajo_HGMC <- datos_trabajo_HGMC[datos_trabajo_HGMC$Código.de.nivel.de.confianza == "ID_GOOD",]
+
+# Lo guardamos en un archivo que va a ser nuestro archivo de trabajo
+ruta_trabajo <- "./trabajo/"
+save(datos_trabajo_HGMC, file=paste0(ruta_trabajo, "datos_trabajo_HGMC.Rdata")) # Este es el fichero que se adjunta por si se quieren replicar los análisis
+```
+
+
+```{r Descriptivo especies}
+especies_hgmc <- data.frame(table(datos_trabajo_HGMC$Nombre.de.organismo))
+colnames(especies_hgmc) <- c("microorganismo", "frecuencia")
+especies_hgmc_10 <- especies_hgmc[especies_hgmc$frecuencia >= 10,]
+```
+
+Vamos a realizar un cluster jerárquico para ver como se agrupan los datos.
+
+```{r Dendrograma}
+ # Calculamos la matriz de distancias euclídeas
+dist_euc <- dist(datos_trabajo_HGMC[,4:18004])
+# Realizamos el análisis de conglomerados jerárquico con el método de Ward
+acj_euc <- hclust(dist_euc, method = "ward.D2")
+# Mostramos el dendrograma resultante
+plot(acj_euc, labels = paste(datos_trabajo_HGMC[,2]), # datos_trabajo[,1]
+main = "Análisis de conglomerados jerárquico con\n distancia euclídea y método de Ward",
+cex=0.6)
+rect.hclust(acj_euc, k = 10)
+```

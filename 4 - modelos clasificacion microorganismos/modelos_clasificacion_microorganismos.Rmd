@@ -1,0 +1,699 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('caret'))install.packages('caret')
+if(!require('kernlab'))install.packages('kernlab')
+if(!require('gmodels'))install.packages('gmodels')
+if(!require('gtools'))install.packages('gtools')
+if(!require('stringr'))install.packages('stringr')
+if(!require('class'))install.packages('class')
+if(!require('e1071'))install.packages('e1071')
+if(!require('reticulate'))install.packages('reticulate')
+if(!require('C50'))install.packages('C50')
+if(!require('randomForest'))install.packages('randomForest')
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(caret)
+library(kernlab)
+library(gmodels)
+library(gtools)
+library(stringr)
+library(class)
+library(e1071)
+library(reticulate)
+library(C50)
+library(randomForest)
+library(kableExtra)
+```
+
+```{python Instalación de las librerías de Python requeridas, include=FALSE, eval=FALSE}
+# Ejecutar solo una vez para instalar las librerías necesarias
+!pip install numpy==1.23
+!pip install seaborn
+!pip install scikit-learn
+!pip install pypi
+!pip install tensorflow
+```
+
+```{python Librerías de Python, include=FALSE}
+# Importamos las diferentes librerías que vamos a usar:
+import numpy as np
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from keras.utils import to_categorical
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score, recall_score, precision_score, ConfusionMatrixDisplay, cohen_kappa_score
+```
+
+# Modelos de clasificación de los microorganismos.
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+## Importar los datos
+
+Ejecutar solamente el código del conjunto de datos que deseemos trabajar
+
+### DRIAMS A
+
+```{r Importación de los datos DRIAMS A}
+load("../Datos/Trabajo/driams_a_sin_na.Rdata")
+load("../Datos/Trabajo/driams_a_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_a_p90 <- quantile(t(driams_a_media_sd[27601,85:18085]), 0.9, type = 6)
+
+columnas_driams_a_p90 <- as.character(colnames(driams_a_media_sd[27601,as.character(seq(2000,20000))])[which(driams_a_media_sd[27601,as.character(seq(2000,20000))] >driams_a_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_a_sin_na), size = nrow(driams_a_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train <- driams_a_sin_na[train, columnas_driams_a_p90]
+# Datos de test
+espectros_test <- driams_a_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels <- driams_a_sin_na[train, 2]
+espectros_train_labels <- factor(espectros_train_labels, levels = levels(as.factor(driams_a_sin_na[, 2])))
+espectros_test_labels <- driams_a_sin_na[-train, 2]
+espectros_test_labels <- factor(espectros_test_labels, levels = levels(as.factor(driams_a_sin_na[, 2])))
+
+# Datos para los modelos SVM
+train_SVM <- cbind(espectros_train_labels,espectros_train)
+colnames(train_SVM) <- c("species", colnames(espectros_train))
+
+test_SVM <- cbind(espectros_test_labels,espectros_test)
+colnames(test_SVM) <- c("species", colnames(espectros_test))
+
+clases <- length(levels(as.factor(driams_a_sin_na[, 2])))
+```
+
+
+```{r Agrupamiento de picos, eval=FALSE}
+# Sirve para ver como se agrupan las variables en grupos que van a formar los picos. No se ha usado para la memoria, solo para hacerse una idea de como se agrupan las variables seleccionadas y comprobar que seleccionan variables correspondientes a ciertos picos.
+
+agrupar_consecutivos <- function(numeros) { 
+  split(numeros, cumsum(c(1, diff(numeros) != 1))) 
+} 
+# Aplicar la función a los datos 
+grupos <- agrupar_consecutivos(as.numeric(columnas_driams_a_p90)) 
+
+
+# Localización m/z del pico medio de cada grupo
+round(as.numeric(lapply(grupos, function(x) mean(x)), 0))
+```
+
+
+### DRIAMS B
+
+```{r Importación de los datos DRIAMS B}
+load("../Datos/Trabajo/driams_b_sin_na.Rdata")
+load("../Datos/Trabajo/driams_b_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p90 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.9, type = 6)
+
+columnas_driams_b_p90 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_b_sin_na), size = nrow(driams_b_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train <- driams_b_sin_na[train, columnas_driams_b_p90]
+# Datos de test
+espectros_test <- driams_b_sin_na[-train, columnas_driams_b_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels <- driams_b_sin_na[train, 2]
+espectros_train_labels <- factor(espectros_train_labels, levels = levels(as.factor(driams_b_sin_na[, 2])))
+espectros_test_labels <- driams_b_sin_na[-train, 2]
+espectros_test_labels <- factor(espectros_test_labels, levels = levels(as.factor(driams_b_sin_na[, 2])))
+
+# Datos para los modelos SVM
+train_SVM <- cbind(espectros_train_labels,espectros_train)
+colnames(train_SVM) <- c("species", colnames(espectros_train))
+
+test_SVM <- cbind(espectros_test_labels,espectros_test)
+colnames(test_SVM) <- c("species", colnames(espectros_test))
+
+clases <- length(levels(as.factor(driams_b_sin_na[, 2])))
+```
+
+### DRIAMS C
+
+```{r Importación de los datos DRIAMS C}
+load("../Datos/Trabajo/driams_c_sin_na.Rdata")
+load("../Datos/Trabajo/driams_c_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+driams_c_p90 <- quantile(t(driams_c_media_sd[4409,59:18059]), 0.9, type = 6)
+
+columnas_driams_c_p90 <- as.character(colnames(driams_c_media_sd[4409,as.character(seq(2000,20000))])[which(driams_c_media_sd[4409,as.character(seq(2000,20000))] >driams_c_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_c_sin_na), size = nrow(driams_c_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train <- driams_c_sin_na[train, columnas_driams_c_p90]
+# Datos de test
+espectros_test <- driams_c_sin_na[-train, columnas_driams_c_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels <- driams_c_sin_na[train, 2]
+espectros_train_labels <- factor(espectros_train_labels, levels = levels(as.factor(driams_c_sin_na[, 2])))
+espectros_test_labels <- driams_c_sin_na[-train, 2]
+espectros_test_labels <- factor(espectros_test_labels, levels = levels(as.factor(driams_c_sin_na[, 2])))
+
+# Datos para los modelos SVM
+train_SVM <- cbind(espectros_train_labels,espectros_train)
+colnames(train_SVM) <- c("species", colnames(espectros_train))
+
+test_SVM <- cbind(espectros_test_labels,espectros_test)
+colnames(test_SVM) <- c("species", colnames(espectros_test))
+
+clases <- length(levels(as.factor(driams_c_sin_na[, 2])))
+
+```
+
+
+### DRIAMS D
+
+```{r Importación de los datos DRIAMS D}
+load("../Datos/Trabajo/driams_d_sin_na.Rdata")
+load("../Datos/Trabajo/driams_d_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+driams_d_p90 <- quantile(t(driams_d_media_sd[10391,55:18055]), 0.9, type = 6)
+
+columnas_driams_d_p90 <- as.character(colnames(driams_d_media_sd[10391,as.character(seq(2000,20000))])[which(driams_d_media_sd[10391,as.character(seq(2000,20000))] >driams_d_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_d_sin_na), size = nrow(driams_d_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train <- driams_d_sin_na[train, columnas_driams_d_p90]
+# Datos de test
+espectros_test <- driams_d_sin_na[-train, columnas_driams_d_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels <- driams_d_sin_na[train, 2]
+espectros_train_labels <- factor(espectros_train_labels, levels = levels(as.factor(driams_d_sin_na[, 2])))
+espectros_test_labels <- driams_d_sin_na[-train, 2]
+espectros_test_labels <- factor(espectros_test_labels, levels = levels(as.factor(driams_d_sin_na[, 2])))
+
+# Datos para los modelos SVM
+train_SVM <- cbind(espectros_train_labels,espectros_train)
+colnames(train_SVM) <- c("species", colnames(espectros_train))
+
+test_SVM <- cbind(espectros_test_labels,espectros_test)
+colnames(test_SVM) <- c("species", colnames(espectros_test))
+
+clases <- length(levels(as.factor(driams_d_sin_na[, 2])))
+```
+
+
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+<!-- %%%%%%%%%% Código común para todos los datasets. %%%%%%%%% -->
+<!-- %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% -->
+
+
+## Comprobamos los datesets de entrenamiento y test resultantes
+
+```{r Estudio de los dataset de entrenamiento y test}
+# Dimensiones de los conjuntos resultantes para entrenamiento
+# 1.Datos
+dim(espectros_train)
+# 2.Etiquetas
+length(espectros_train_labels)
+
+# Dimensiones de los conjuntos resultantes para test
+# 1.Datos
+dim(espectros_test)
+# 2.Etiquetas
+length(espectros_test_labels)
+
+# Comprobamos la distribución de los microorganismos en cada uno de los grupos
+# para ver si es homogénea
+# 1. Datos de entrenamiento
+round(prop.table(table(espectros_train_labels, dnn = "Frecuencia relativa datos de entrenamiento")),4)
+length(round(prop.table(table(espectros_train_labels, dnn = "Frecuencia relativa datos de entrenamiento")),4))
+# 2. Datos de test
+round(prop.table(table(espectros_test_labels, dnn = "Frecuencia relativa datos de test")),4)
+length(round(prop.table(table(espectros_test_labels, dnn = "Frecuencia relativa datos de test")),4))
+```
+
+## k-Nearest Neighbors
+
+```{r Entrenamiento del modelo con nuestros datos (k_1)}
+espectros_test_pred_1 <- knn(train = espectros_train, test = espectros_test,
+                        cl = espectros_train_labels, k = 1, prob = TRUE)
+
+
+rendimiento_k1 <- confusionMatrix(espectros_test_pred_1, espectros_test_labels)
+rendimiento_k1
+```
+
+
+```{r Entrenamiento del modelo con nuestros datos (k_3)}
+espectros_test_pred_3 <- knn(train = espectros_train, test = espectros_test,
+                        cl = espectros_train_labels, k = 3)
+
+
+rendimiento_k3 <- confusionMatrix(espectros_test_pred_3, espectros_test_labels)
+rendimiento_k3
+```
+
+
+```{r Entrenamiento del modelo con nuestros datos (k_5)}
+espectros_test_pred_5 <- knn(train = espectros_train, test = espectros_test,
+                        cl = espectros_train_labels, k = 5, prob = TRUE)
+
+
+rendimiento_k5 <- confusionMatrix(espectros_test_pred_5, espectros_test_labels)
+rendimiento_k5
+```
+
+
+ 
+```{r Tabla resumen de los modelos k-Nearest Neighbors, echo=FALSE}
+tablaResumen_knn <- data.frame(c("Modelo k-NN (k = 1)",
+                             "Modelo k-NN (k = 3)",
+                             "Modelo k-NN (k = 5)"),
+                          round(c(rendimiento_k1$overall["Accuracy"],
+                             rendimiento_k3$overall["Accuracy"],
+                             rendimiento_k5$overall["Accuracy"]),3),
+                          round(c(rendimiento_k1$overall["Kappa"],
+                             rendimiento_k3$overall["Kappa"],
+                             rendimiento_k5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_knn) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_knn, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos _k_-Nearest Neighbors")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+## Naive Bayes
+
+```{r Entrenamiento del modelo Naive Bayes}
+# Laplace = 0
+driams_nb <- naiveBayes(espectros_train, espectros_train_labels, laplace = 0)
+
+# Predicciones
+pred_driams_nb <- predict(driams_nb, espectros_test)
+```
+
+```{r Evaluación del rendimiento de los modelos Naive Bayes DRIAMS B}
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_lp0 <- confusionMatrix(pred_driams_nb, as.factor(espectros_test_labels))
+rendimiento_nb_lp0
+```
+
+
+```{r Tabla resumen de los modelos Naive Bayes, echo=FALSE}
+tablaResumen_nb <- data.frame(c("Modelo con Naive Bayes sin Laplace"),
+                          round(c(rendimiento_driams_nb_lp0$overall["Accuracy"]),3),
+                          round(c(rendimiento_driams_nb_lp0$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_nb) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_nb, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos Naive Bayes")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+## Support Vector Machine
+
+**Modelo SVM con kernel lineal**
+
+```{r SVM con kernel lineal y validación 3-fold crossvalidation}
+# Fijamos la semilla para los cálculos aleatorios
+set.seed(parametros$semilla)
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_3fold <- train(species~., train_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_3fold
+```
+
+```{r Evaluación del modelo SVM}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_3fold <- predict(SVM_3fold, test_SVM)
+
+cmSVM <- table(pred_SVM_3fold, test_SVM$species) 
+rendimiento_SVM_lineal <- confusionMatrix(cmSVM)
+rendimiento_SVM_lineal
+```
+
+
+**Modelo SVM con kernel radial**
+
+```{r SVM con kernel RBF validación 3-fold crossvalidation}
+# Fijamos la semilla para los cálculos aleatorios
+set.seed(parametros$semilla)
+
+# SVM con kernel RBF, 3-fold crossvalidation (he añadido una validación cruzada de 
+# 3-fold para dar mayor robustez al modelo)
+SVM_RBF <- train(species~., train_SVM, method = "svmRadial",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_RBF
+```
+
+```{r Gráfico y predicciones del modelo RBF con 3-fold crossvalidation}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF <- predict(SVM_RBF, test_SVM)
+
+cmRBF <- table(pred_SVM_RBF, test_SVM$species) 
+rendimiento_SVM_RBF <- confusionMatrix(cmRBF)
+rendimiento_SVM_RBF
+```
+
+
+## Arboles de decisiones
+
+```{r Modelo "decision tree" sin boosting}
+# Fijamos la semilla para los cálculos aleatorios
+set.seed(parametros$semilla)
+# Entrenamos el modelo de árbol de decisión elegido con nuestros datos 
+decision_tree <- C5.0(espectros_train, as.factor(espectros_train_labels))
+decision_tree
+# Podemos visualizar un resumen del funcionamiento del árbol y el algoritmo que
+# usa para la toma de decisiones
+summary(decision_tree)
+```
+
+```{r Predicciones y evaluación del rendimiento del modelo "decision tree" sin boosting}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree <- predict(decision_tree, espectros_test)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree <- confusionMatrix(pred_dtree, as.factor(espectros_test_labels))
+rendimiento_dtree
+```
+
+**Modelo "decision tree" con boosting**
+
+```{r Modelo "decision tree" con boosting (10 trials)}
+# Fijamos la semilla para los cálculos aleatorios
+set.seed(parametros$semilla)
+# Entrenamos el modelo de árbol de decisión elegido con nuestros datos. En este caso
+# vamos a usar un boost de 10 intentos con el objetivo de hacer a nuestro modelo más
+# preciso y robusto
+decision_tree_boost <- C5.0(espectros_train, as.factor(espectros_train_labels), trials = 10)
+decision_tree_boost
+# summary(decision_tree_boost)
+```
+
+```{r Predicciones y evaluación del rendimiento del modelo "decision tree" con boosting}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost <- predict(decision_tree_boost, espectros_test)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost <- confusionMatrix(pred_dtree_boost, as.factor(espectros_test_labels))
+rendimiento_dtree_boost
+```
+
+## Random Forest.
+
+```{r Parametros "random forest"}
+mejor_rforest <- tuneRF(espectros_train, 
+                        as.factor(espectros_train_labels), 
+                        ntreeTry=50, # Probar 50 árboles en cada iteración
+                        stepFactor=1.5, # Factor por el cual se incrementará el número de variables en cada iteración
+                        improve=0.05, # Umbral mínimo de mejora en el error OOB
+                        trace=TRUE, 
+                        plot=TRUE, 
+                        doBest=FALSE)
+mejor_rforest
+mejor_rforest[which.min(mejor_rforest[, 2]), "mtry"]
+
+```
+
+```{r Selección delo numero de arboles}
+# Define el número de árboles que quieres probar
+n_trees <- c(50, 100, 200, 500, 1000) 
+# Realiza la validación cruzada para cada número de árboles 
+results <- data.frame() 
+for (n in n_trees) { 
+  set.seed(parametros$semilla) # Para reproducibilidad 
+  rf_model <- randomForest(espectros_train, as.factor(espectros_train_labels), ntree = n, mtry = mejor_rforest[which.min(mejor_rforest[, 2]), "mtry"]) 
+  predictions <- predict(rf_model, newdata = espectros_test) 
+  accuracy <- sum(predictions == as.factor(espectros_test_labels)) / nrow(espectros_test) 
+  results <- rbind(results, data.frame(ntree = n, accuracy = accuracy)) 
+  } 
+# Encuentra el mejor número de árboles 
+best_ntree <- results[which.max(results$accuracy), "ntree"] 
+print(results) 
+cat("El mejor número de árboles es:", best_ntree, "\n")
+```
+
+
+```{r Modelo "random forest"}
+set.seed(parametros$semilla)
+rforest <- randomForest(espectros_train, as.factor(espectros_train_labels),mtry = mejor_rforest[which.min(mejor_rforest[, 2]), "mtry"], ntree = best_ntree)
+rforest
+```
+
+```{r Datos random forest}
+importance(rforest)
+varImpPlot(rforest)
+```
+
+
+```{r Predicciones y evaluación del rendimiento del modelo "random forest"}
+pred_rforest <- predict(rforest, espectros_test)
+rendimiento_rforest <- confusionMatrix(pred_rforest, as.factor(espectros_test_labels))
+rendimiento_rforest
+```
+
+## Redes neuronales artificiales
+
+```{python Variables con los datos}
+# Importamos los datos de R 
+espectros_train = r.espectros_train
+espectros_test = r.espectros_test
+```
+
+```{python Red neuronal con 2 capa oculta}
+# Definimos el número de clases en las que se pueden clasificar los datos
+num_clases = r.clases
+
+# Creamos el modelo secuencial
+ann = Sequential()
+
+# Añadimos las diferentes capas al modelo:
+
+# 1. Añadimos la capa de entrada con 1800 nodos 
+# (igual que el número de variables independientes)
+ann.add(Dense(1800, input_dim=1800))
+# 2. Añadimos la capa oculta con 1000 nodos y activación relu
+ann.add(Dense(1000, activation="relu"))
+# 3. Añadimos una capa de "dropout" que aplica una probabilidad "x" de descartar 
+# aleatoriamente algunas unidades de la capa anterior. 
+# Esta capa ayuda a prevenir el sobreajuste y a regularizar el modelo. 
+# Esta capa no tiene parámetros, solo modifica los datos de entrada.
+ann.add(Dropout(rate=0.3))
+# 4. Añadimos la segunda capa oculta con 75 nodos y activación relu
+ann.add(Dense(500, activation="relu"))
+# 5. Añadimos otra capa de "dropout"
+ann.add(Dropout(rate=0.3))
+# 4. Por último, añadimos la capa de salida con el mismo número de nodos que categorías 
+# haya en la variable dependiente o de salida. 
+# En este caso la activación es 'softmax' que se encarga de normalizar las salidas 
+# de la capa anterior para que sumen 1 y se puedan interpretar como probabilidades. 
+# El nodo con la mayor probabilidad se elige como la predicción final del modelo.
+ann.add(Dense(num_clases, activation="softmax"))
+
+# Mostramos el resumen del modelo
+ann.summary()
+```
+
+```{python Entrenamiento del modelo de red neuronal con 2 capa oculta, results='hide'}
+# Convertimos las clases en vectores one-hot
+etiquetas_train = r.espectros_train_labels
+etiquetas_test = np.array(r.espectros_test_labels)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train)
+etiquetas_test_num = label_encoder.transform(etiquetas_test)
+etiquetas_test_1 = to_categorical(etiquetas_test_num)
+
+
+#label_encoder.fit(etiquetas_train)
+etiquetas_train_num = label_encoder.transform(etiquetas_train)
+etiquetas_train_1 = to_categorical(etiquetas_train_num)
+
+# Compilamos el modelo
+ann.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Número de épocas
+n_epocas = 40
+
+# Entrenamiento del modelo con los parámetros indicados
+ann_fit = ann.fit(espectros_train, 
+                    etiquetas_train_1, 
+                    validation_split=0.2, 
+                    epochs=n_epocas, 
+                    verbose=2)
+```
+
+```{python Función para crear el gráfico de aprendizaje durante el entrenamiento de la red neuronal}
+# Función para generar un gráfico de 'accuracy' y 'loss'
+def plot_prediction(n_epochs, mfit):
+    N = n_epochs
+    plt.style.use("ggplot")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15,6))
+    fig.suptitle('Training Loss and Accuracy')
+    
+    ax1.plot(np.arange(0, N), mfit.history["accuracy"], label="train")
+    ax1.plot(np.arange(0, N), mfit.history["val_accuracy"], label="validation")
+    ax1.set_title("Accuracy")
+    ax1.set_xlabel("Epoch #")
+    ax1.set_ylabel("Accuracy")
+    ax1.legend(loc="lower right")
+    
+    ax2.plot(np.arange(0, N), mfit.history["loss"], label="train")
+    ax2.plot(np.arange(0, N), mfit.history["val_loss"], label="validation")
+    ax2.set_title("Loss")
+    ax2.set_xlabel("Epoch #")
+    ax2.set_ylabel("Loss")
+    ax2.legend(loc="upper right")
+    
+    plt.show()
+```
+
+```{python Gráfico de aprendizaje de la red neuronal con 2 capas oculta}
+# Mostramos el gráfico con la curva de aprendizaje y de pérdida
+plot_prediction(n_epocas, ann_fit) 
+```
+
+```{python Predicciones modelo de red neuronal con 1 capa oculta, results='hide'}
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal = ann.predict(espectros_test)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases = np.argmax(pred_red_neuronal, axis=1)
+```
+
+```{python}
+# Creamos la matriz de confusión.
+conf_matrix = confusion_matrix(label_encoder.inverse_transform(pred_red_neuronal_clases), etiquetas_test)
+cohen = cohen_kappa_score(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases))
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe1 = classification_report(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases),zero_division=0, output_dict=True)
+accuracy = informe1['accuracy']
+print("Accuracy:")
+print(accuracy, '\n')
+informe1 = classification_report(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases),zero_division=0)
+print("Informe de clasificación:")
+print(informe1)
+```
+
+```{python Guardamos la red neuronal}
+ann.save('./driams_c/red_neuronal_driams_c.h5')
+```
+
+
+## Tabla resumen de los modelos
+
+```{r Tabla resumen de los modelos, echo=FALSE}
+tablaResumen <- data.frame(c("Modelo k-NN (k = 1)",
+                             "Modelo k-NN (k = 3)",
+                             "Modelo k-NN (k = 5)",
+                             "Modelo con Naive Bayes sin Laplace",
+                             "Modelo SVM kernel lineal y 3 CV",
+                             "Modelo SVM kernel radial y 3 CV",
+                             "Modelo decision tree",
+                             "Modelo decision tree (boost 10 trials)",
+                             paste0("Modelo random forest (",best_ntree, " arboles, mtry = ", mejor_rforest[which.min(mejor_rforest[, 2]), "mtry"],")"),
+                             "Red neuronal con 2 capas ocultas"),
+                          round(c(rendimiento_k1$overall["Accuracy"],
+                             rendimiento_k3$overall["Accuracy"],
+                             rendimiento_k5$overall["Accuracy"],
+                             rendimiento_nb_lp0$overall["Accuracy"],
+                             rendimiento_SVM_lineal$overall["Accuracy"],
+                             rendimiento_SVM_RBF$overall["Accuracy"],
+                             rendimiento_dtree$overall["Accuracy"],
+                             rendimiento_dtree_boost$overall["Accuracy"],
+                             rendimiento_rforest$overall["Accuracy"],
+                             py$accuracy),3),
+                          round(c(rendimiento_k1$overall["Kappa"],
+                             rendimiento_k3$overall["Kappa"],
+                             rendimiento_k5$overall["Kappa"],
+                             rendimiento_nb_lp0$overall["Kappa"],
+                             rendimiento_SVM_lineal$overall["Kappa"],
+                             rendimiento_SVM_RBF$overall["Kappa"],
+                             rendimiento_dtree$overall["Kappa"],
+                             rendimiento_dtree_boost$overall["Kappa"],
+                             rendimiento_rforest$overall["Kappa"],
+                             py$cohen),3))
+
+
+colnames(tablaResumen) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos para DRIAMS C")%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+
+## Guardar los modelos generados
+
+```{r Guardamos los modelos generados}
+save(espectros_test_pred_1, espectros_test_pred_3, espectros_test_pred_5,
+     driams_nb,
+     SVM_3fold, SVM_RBF,
+     decision_tree, decision_tree_boost,
+     rforest,
+     file="./driams_a/modelos_driams_a.Rdata")
+```

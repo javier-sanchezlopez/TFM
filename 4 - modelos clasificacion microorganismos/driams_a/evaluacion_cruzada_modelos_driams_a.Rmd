@@ -1,0 +1,691 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('caret'))install.packages('caret')
+if(!require('kernlab'))install.packages('kernlab')
+if(!require('gmodels'))install.packages('gmodels')
+if(!require('gtools'))install.packages('gtools')
+if(!require('stringr'))install.packages('stringr')
+if(!require('class'))install.packages('class')
+if(!require('e1071'))install.packages('e1071')
+if(!require('reticulate'))install.packages('reticulate')
+if(!require('C50'))install.packages('C50')
+if(!require('randomForest'))install.packages('randomForest')
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(caret)
+library(kernlab)
+library(gmodels)
+library(gtools)
+library(stringr)
+library(class)
+library(e1071)
+library(reticulate)
+library(C50)
+library(randomForest)
+library(kableExtra)
+```
+
+```{python Instalación de las librerías de Python requeridas, include=FALSE, eval=FALSE}
+# Ejecutar solo una vez para instalar las librerías necesarias
+!pip install numpy==1.23
+!pip install seaborn
+!pip install scikit-learn
+!pip install pypi
+!pip install tensorflow
+```
+
+```{python Librerías de Python, include=FALSE}
+# Importamos las diferentes librerías que vamos a usar:
+import numpy as np
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from keras.utils import to_categorical
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score, recall_score, precision_score, ConfusionMatrixDisplay, cohen_kappa_score
+import joblib
+```
+
+# Modelos de clasificación de los microorganismos.
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+
+# Evaluación cruzada
+
+## DRIAMS A
+
+```{r Cargamos los modelos de DRIAMS A}
+load("./modelos_driams_a.Rdata")
+```
+
+
+```{r Datos de DRIAMS A}
+load("../../Datos/Trabajo/driams_a_sin_na.Rdata")
+load("../../Datos/Trabajo/driams_a_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_a_p90 <- quantile(t(driams_a_media_sd[27601,85:18085]), 0.9, type = 6)
+
+columnas_driams_a_p90 <- as.character(colnames(driams_a_media_sd[27601,as.character(seq(2000,20000))])[which(driams_a_media_sd[27601,as.character(seq(2000,20000))] >driams_a_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_a_sin_na), size = nrow(driams_a_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_a <- driams_a_sin_na[train, columnas_driams_a_p90]
+# Datos de test
+espectros_test_a <- driams_a_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels_a <- driams_a_sin_na[train, 2]
+
+espectros_test_labels_a <- driams_a_sin_na[-train, 2]
+
+
+clases <- length(levels(as.factor(driams_a_sin_na[, 2])))
+```
+
+### Con datos de DRIAMS B
+
+```{r Importación de los datos de test de DRIAMS B}
+load("../../Datos/Trabajo/driams_b_sin_na.Rdata")
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_b_sin_na), size = nrow(driams_b_sin_na) * 0.75, replace = F)
+espectros_test_b <- driams_b_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_b <- driams_b_sin_na[-train, 2]
+espectros_test_labels_b <- factor(espectros_test_labels_b)
+
+# Datos para los modelos SVM
+test_SVM_b <- cbind(espectros_test_labels_b,espectros_test_b)
+colnames(test_SVM_b) <- c("species", colnames(espectros_test_b))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en a y en b
+especies_da <- levels(factor(driams_a_sin_na$species))
+especies_db <- levels(espectros_test_labels_b) 
+especies_comunes_a_b <- intersect(especies_da, especies_db) 
+print(especies_comunes_a_b)
+```
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+niveles_da <- levels(factor(espectros_train_labels_a))
+etiquetas_test_db_niveles_da <- factor(espectros_test_labels_b[espectros_test_labels_b %in% especies_comunes_a_b], levels = niveles_da)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS A evaluación DRIAMS B}
+knn1_da_db <- knn(train = espectros_train_a,
+                  test = espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ],
+                  cl = espectros_train_labels_a, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_da_db <- confusionMatrix(knn1_da_db, etiquetas_test_db_niveles_da)
+rendimiento_knn1_da_db
+```
+
+```{r k-NN (k_3) DRIAMS A evaluación DRIAMS B}
+knn3_da_db <- knn(train = espectros_train_a,
+                  test = espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ],
+                  cl = espectros_train_labels_a, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_da_db <- confusionMatrix(knn3_da_db, etiquetas_test_db_niveles_da)
+rendimiento_knn3_da_db
+```
+
+```{r k-NN (k_5) DRIAMS A evaluacion DRIAMS B}
+knn5_da_db <- knn(train = espectros_train_a,
+                  test = espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ],
+                  cl = espectros_train_labels_a, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_da_db <- confusionMatrix(knn5_da_db, etiquetas_test_db_niveles_da)
+rendimiento_knn5_da_db
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS A evaluación DRIAMS B}
+pred_nb_da_db <- predict(driams_nb, espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_da_db <- confusionMatrix(pred_nb_da_db, etiquetas_test_db_niveles_da)
+rendimiento_nb_da_db
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS A evaluación DRIAMS B}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_da_db <- predict(SVM_3fold, test_SVM_b[espectros_test_labels_b %in% especies_comunes_a_b,])
+
+
+rendimiento_SVM_lineal_da_db <- confusionMatrix(pred_SVM_da_db, etiquetas_test_db_niveles_da)
+rendimiento_SVM_lineal_da_db
+```
+
+```{r Modelo SVM radial DRIAMS A evaluación DRIAMS B}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_da_db <- predict(SVM_RBF, test_SVM_b[espectros_test_labels_b %in% especies_comunes_a_b,])
+
+
+rendimiento_SVM_RBF_da_db <- confusionMatrix(pred_SVM_RBF_da_db, etiquetas_test_db_niveles_da)
+rendimiento_SVM_RBF_da_db
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS A evaluación DRIAMS B}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_da_db <- predict(decision_tree_boost, espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_da_db <- confusionMatrix(pred_dtree_boost_da_db, etiquetas_test_db_niveles_da)
+rendimiento_dtree_boost_da_db
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS A evaluación DRIAMS B}
+pred_rforest_da_db <- predict(rforest, espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ])
+
+rendimiento_rforest_da_db <- confusionMatrix(pred_rforest_da_db, etiquetas_test_db_niveles_da)
+rendimiento_rforest_da_db
+```
+
+#### Evaluación del rendimiento en redes neuronales
+```{r}
+espectros_test_b_ann <- espectros_test_b[espectros_test_labels_b %in% especies_comunes_a_b, ]
+etiquetas_test_b_ann <- espectros_test_labels_b[espectros_test_labels_b %in% especies_comunes_a_b]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_a/red_neuronal_driams_a.h5')
+# Importamos los datos de R
+etiquetas_train_a = r.espectros_train_labels_a
+espectros_test_b = r.espectros_test_b_ann
+etiquetas_test_b = np.array(r.etiquetas_test_b_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_a)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_da_db = ann.predict(espectros_test_b)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_da_db = np.argmax(pred_red_neuronal_da_db, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_da = r.niveles_da
+conf_matrix_da_db = confusion_matrix(etiquetas_test_b, label_encoder.inverse_transform(pred_red_neuronal_clases_da_db), labels=niveles_da)
+cohen_da_db = cohen_kappa_score(etiquetas_test_b, label_encoder.inverse_transform(pred_red_neuronal_clases_da_db), labels=niveles_da)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_da_db,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_da_db, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_da_db = classification_report(etiquetas_test_b, label_encoder.inverse_transform(pred_red_neuronal_clases_da_db), zero_division=0, output_dict=True)
+accuracy_da_db = informe_rend_da_db['accuracy']
+print("Accuracy:")
+print(accuracy_da_db, '\n')
+informe_rend_da_db = classification_report(etiquetas_test_b, label_encoder.inverse_transform(pred_red_neuronal_clases_da_db), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_da_db)
+```
+
+
+### Con datos de DRIAMS C
+
+```{r Importación de los datos de test de DRIAMS C}
+load("../../Datos/Trabajo/driams_c_sin_na.Rdata")
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_c_sin_na), size = nrow(driams_c_sin_na) * 0.75, replace = F)
+espectros_test_c<- driams_c_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_c <- driams_c_sin_na[-train, 2]
+espectros_test_labels_c <- factor(espectros_test_labels_c)
+
+# Datos para los modelos SVM
+test_SVM_c <- cbind(espectros_test_labels_c,espectros_test_c)
+colnames(test_SVM_c) <- c("species", colnames(espectros_test_c))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en a y en c
+especies_dc <- levels(espectros_test_labels_c) 
+especies_comunes_a_c <- intersect(especies_da, especies_dc) 
+print(especies_comunes_a_c)
+```
+
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+etiquetas_test_dc_niveles_da <- factor(espectros_test_labels_c[espectros_test_labels_c %in% especies_comunes_a_c], levels = niveles_da)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS A evaluación DRIAMS C}
+knn1_da_dc<- knn(train = espectros_train_a,
+                  test = espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ],
+                  cl = espectros_train_labels_a, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_da_dc <- confusionMatrix(knn1_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_knn1_da_dc
+```
+
+```{r k-NN (k_3) DRIAMS A evaluación DRIAMS C}
+knn3_da_dc <- knn(train = espectros_train_a,
+                  test = espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ],
+                  cl = espectros_train_labels_a, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_da_dc <- confusionMatrix(knn3_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_knn3_da_dc
+```
+
+```{r k-NN (k_5) DRIAMS A evaluacion DRIAMS C}
+knn5_da_dc <- knn(train = espectros_train_a,
+                  test = espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ],
+                  cl = espectros_train_labels_a, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_da_dc <- confusionMatrix(knn5_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_knn5_da_dc
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS A evaluación DRIAMS C}
+pred_nb_da_dc <- predict(driams_nb, espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_da_dc <- confusionMatrix(pred_nb_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_nb_da_dc
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS A evaluación DRIAMS C}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_da_dc <- predict(SVM_3fold, test_SVM_c[espectros_test_labels_c %in% especies_comunes_a_c,])
+
+
+rendimiento_SVM_lineal_da_dc <- confusionMatrix(pred_SVM_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_SVM_lineal_da_dc
+```
+
+```{r Modelo SVM radial DRIAMS A evaluación DRIAMS C}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_da_dc <- predict(SVM_RBF, test_SVM_c[espectros_test_labels_c %in% especies_comunes_a_c,])
+
+
+rendimiento_SVM_RBF_da_dc <- confusionMatrix(pred_SVM_RBF_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_SVM_RBF_da_dc
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS A evaluación DRIAMS C}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_da_dc <- predict(decision_tree_boost, espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_da_dc <- confusionMatrix(pred_dtree_boost_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_dtree_boost_da_dc
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS A evaluación DRIAMS C}
+pred_rforest_da_dc <- predict(rforest, espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ])
+
+rendimiento_rforest_da_dc <- confusionMatrix(pred_rforest_da_dc, etiquetas_test_dc_niveles_da)
+rendimiento_rforest_da_dc
+```
+
+#### Evaluación del rendimiento en redes neuronales
+
+```{r}
+espectros_test_c_ann <- espectros_test_c[espectros_test_labels_c %in% especies_comunes_a_c, ]
+etiquetas_test_c_ann <- espectros_test_labels_c[espectros_test_labels_c %in% especies_comunes_a_c]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_a/red_neuronal_driams_a.h5')
+# Importamos los datos de R
+etiquetas_train_a = r.espectros_train_labels_a
+espectros_test_c= r.espectros_test_c_ann
+etiquetas_test_c = np.array(r.etiquetas_test_c_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_a)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_da_dc = ann.predict(espectros_test_c)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_da_dc = np.argmax(pred_red_neuronal_da_dc, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_da = r.niveles_da
+conf_matrix_da_dc = confusion_matrix(etiquetas_test_c, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dc), labels=niveles_da)
+cohen_da_dc = cohen_kappa_score(etiquetas_test_c, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dc), labels=niveles_da)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_da_dc,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_da_dc, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_da_dc = classification_report(etiquetas_test_c, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dc), zero_division=0, output_dict=True)
+accuracy_da_dc = informe_rend_da_dc['accuracy']
+print("Accuracy:")
+print(accuracy_da_dc, '\n')
+informe_rend_da_dc = classification_report(etiquetas_test_c, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dc), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_da_dc)
+```
+
+
+### Con datos de DRIAMS D
+
+```{r Importación de los datos de test de DRIAMS D}
+load("../../Datos/Trabajo/driams_d_sin_na.Rdata")
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_d_sin_na), size = nrow(driams_d_sin_na) * 0.75, replace = F)
+espectros_test_d<- driams_d_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_d <- driams_d_sin_na[-train, 2]
+espectros_test_labels_d <- factor(espectros_test_labels_d)
+
+# Datos para los modelos SVM
+test_SVM_d <- cbind(espectros_test_labels_d,espectros_test_d)
+colnames(test_SVM_d) <- c("species", colnames(espectros_test_d))
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en a y en d
+especies_dd <- levels(espectros_test_labels_d) 
+especies_comunes_a_d <- intersect(especies_da, especies_dd) 
+print(especies_comunes_a_d)
+```
+
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+etiquetas_test_dd_niveles_da <- factor(espectros_test_labels_d[espectros_test_labels_d %in% especies_comunes_a_d], levels = niveles_da)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS A evaluación DRIAMS D}
+knn1_da_dd<- knn(train = espectros_train_a,
+                  test = espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ],
+                  cl = espectros_train_labels_a, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_da_dd<- confusionMatrix(knn1_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_knn1_da_dd
+```
+
+```{r k-NN (k_3) DRIAMS A evaluación DRIAMS D}
+knn3_da_dd<- knn(train = espectros_train_a,
+                  test = espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ],
+                  cl = espectros_train_labels_a, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_da_dd<- confusionMatrix(knn3_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_knn3_da_dd
+```
+
+```{r k-NN (k_5) DRIAMS A evaluacion DRIAMS D}
+knn5_da_dd <- knn(train = espectros_train_a,
+                  test = espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ],
+                  cl = espectros_train_labels_a, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_da_dd <- confusionMatrix(knn5_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_knn5_da_dd
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS A evaluación DRIAMS D}
+pred_nb_da_dd <- predict(driams_nb, espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_da_dd <- confusionMatrix(pred_nb_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_nb_da_dd
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS A evaluación DRIAMS D}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_da_dd <- predict(SVM_3fold, test_SVM_d[espectros_test_labels_d %in% especies_comunes_a_d,])
+
+
+rendimiento_SVM_lineal_da_dd <- confusionMatrix(pred_SVM_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_SVM_lineal_da_dd
+```
+
+```{r Modelo SVM radial DRIAMS A evaluación DRIAMS D}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_da_dd <- predict(SVM_RBF, test_SVM_d[espectros_test_labels_d %in% especies_comunes_a_d,])
+
+
+rendimiento_SVM_RBF_da_dd <- confusionMatrix(pred_SVM_RBF_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_SVM_RBF_da_dd
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS A evaluación DRIAMS D}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_da_dd<- predict(decision_tree_boost, espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_da_dd <- confusionMatrix(pred_dtree_boost_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_dtree_boost_da_dd
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS A evaluación DRIAMS D}
+pred_rforest_da_dd <- predict(rforest, espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ])
+
+rendimiento_rforest_da_dd <- confusionMatrix(pred_rforest_da_dd, etiquetas_test_dd_niveles_da)
+rendimiento_rforest_da_dd
+```
+
+#### Evaluación del rendimiento en redes neuronales
+
+```{r}
+espectros_test_d_ann <- espectros_test_d[espectros_test_labels_d %in% especies_comunes_a_d, ]
+etiquetas_test_d_ann <- espectros_test_labels_d[espectros_test_labels_d %in% especies_comunes_a_d]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_a/red_neuronal_driams_a.h5')
+# Importamos los datos de R
+etiquetas_train_a = r.espectros_train_labels_a
+espectros_test_d= r.espectros_test_d_ann
+etiquetas_test_d = np.array(r.etiquetas_test_d_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_a)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_da_dd= ann.predict(espectros_test_d)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_da_dd = np.argmax(pred_red_neuronal_da_dd, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_da = r.niveles_da
+conf_matrix_da_dd = confusion_matrix(etiquetas_test_d, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dd), labels=niveles_da)
+cohen_da_dd = cohen_kappa_score(etiquetas_test_d, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dd), labels=niveles_da)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_da_dd,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_da_dd, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_da_dd = classification_report(etiquetas_test_d, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dd), zero_division=0, output_dict=True)
+accuracy_da_dd = informe_rend_da_dd['accuracy']
+print("Accuracy:")
+print(accuracy_da_dd, '\n')
+informe_rend_da_dd = classification_report(etiquetas_test_d, label_encoder.inverse_transform(pred_red_neuronal_clases_da_dd), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_da_dd)
+```
+
+## Tabla resumen
+
+```{r Tabla resumen de los modelos, echo=FALSE}
+tablaCruzada_da <- data.frame(c("Modelo k-NN (k = 1)",
+                             "Modelo k-NN (k = 3)",
+                             "Modelo k-NN (k = 5)",
+                             "Modelo con Naive Bayes",
+                             "Modelo SVM kernel lineal",
+                             "Modelo SVM kernel radial",
+                             "Modelo decision tree con boost",
+                             "Modelo random forest",
+                             "Red neuronal con 2 capas ocultas"),
+                          round(c(rendimiento_knn1_da_db$overall["Accuracy"],
+                             rendimiento_knn3_da_db$overall["Accuracy"],
+                             rendimiento_knn5_da_db$overall["Accuracy"],
+                             rendimiento_nb_da_db$overall["Accuracy"],
+                             rendimiento_SVM_lineal_da_db$overall["Accuracy"],
+                             rendimiento_SVM_RBF_da_db$overall["Accuracy"],
+                             rendimiento_dtree_boost_da_db$overall["Accuracy"],
+                             rendimiento_rforest_da_db$overall["Accuracy"],
+                             py$accuracy_da_db),3),
+                          round(c(rendimiento_knn1_da_db$overall["Kappa"],
+                             rendimiento_knn3_da_db$overall["Kappa"],
+                             rendimiento_knn5_da_db$overall["Kappa"],
+                             rendimiento_nb_da_db$overall["Kappa"],
+                             rendimiento_SVM_lineal_da_db$overall["Kappa"],
+                             rendimiento_SVM_RBF_da_db$overall["Kappa"],
+                             rendimiento_dtree_boost_da_db$overall["Kappa"],
+                             rendimiento_rforest_da_db$overall["Kappa"],
+                             py$cohen_da_db),3),
+                          round(c(rendimiento_knn1_da_dc$overall["Accuracy"],
+                             rendimiento_knn3_da_dc$overall["Accuracy"],
+                             rendimiento_knn5_da_dc$overall["Accuracy"],
+                             rendimiento_nb_da_dc$overall["Accuracy"],
+                             rendimiento_SVM_lineal_da_dc$overall["Accuracy"],
+                             rendimiento_SVM_RBF_da_dc$overall["Accuracy"],
+                             rendimiento_dtree_boost_da_dc$overall["Accuracy"],
+                             rendimiento_rforest_da_dc$overall["Accuracy"],
+                             py$accuracy_da_dc),3),
+                          round(c(rendimiento_knn1_da_dc$overall["Kappa"],
+                             rendimiento_knn3_da_dc$overall["Kappa"],
+                             rendimiento_knn5_da_dc$overall["Kappa"],
+                             rendimiento_nb_da_dc$overall["Kappa"],
+                             rendimiento_SVM_lineal_da_dc$overall["Kappa"],
+                             rendimiento_SVM_RBF_da_dc$overall["Kappa"],
+                             rendimiento_dtree_boost_da_dc$overall["Kappa"],
+                             rendimiento_rforest_da_dc$overall["Kappa"],
+                             py$cohen_da_dc),3),
+                           round(c(rendimiento_knn1_da_dd$overall["Accuracy"],
+                             rendimiento_knn3_da_dd$overall["Accuracy"],
+                             rendimiento_knn5_da_dd$overall["Accuracy"],
+                             rendimiento_nb_da_dd$overall["Accuracy"],
+                             rendimiento_SVM_lineal_da_dd$overall["Accuracy"],
+                             rendimiento_SVM_RBF_da_dd$overall["Accuracy"],
+                             rendimiento_dtree_boost_da_dd$overall["Accuracy"],
+                             rendimiento_rforest_da_dd$overall["Accuracy"],
+                             py$accuracy_da_dd),3),
+                          round(c(rendimiento_knn1_da_dd$overall["Kappa"],
+                             rendimiento_knn3_da_dd$overall["Kappa"],
+                             rendimiento_knn5_da_dd$overall["Kappa"],
+                             rendimiento_nb_da_dd$overall["Kappa"],
+                             rendimiento_SVM_lineal_da_dd$overall["Kappa"],
+                             rendimiento_SVM_RBF_da_dd$overall["Kappa"],
+                             rendimiento_dtree_boost_da_dd$overall["Kappa"],
+                             rendimiento_rforest_da_dd$overall["Kappa"],
+                             py$cohen_da_dd),3))
+
+
+colnames(tablaCruzada_da) <- c("", "Accuracy", "Kappa", "Accuracy", "Kappa", "Accuracy", "Kappa")
+
+kable(tablaCruzada_da, "latex", booktabs = T,
+      align = c("l", "c", "c", "c", "c", "c", "c"), 
+      caption = "Tabla evaluación cruzada de los modelos entrenados con DRIAMS A")%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))%>%
+add_header_above(c(" " = 1,
+                     "DRIAMS B" = 2,
+                     "DRIAMS C" = 2, 
+                     "DRIAMS D" = 2))
+```
+
+

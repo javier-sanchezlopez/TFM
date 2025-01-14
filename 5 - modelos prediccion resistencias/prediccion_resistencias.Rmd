@@ -1,0 +1,927 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('caret'))install.packages('caret')
+if(!require('kernlab'))install.packages('kernlab')
+if(!require('gmodels'))install.packages('gmodels')
+if(!require('gtools'))install.packages('gtools')
+if(!require('stringr'))install.packages('stringr')
+if(!require('class'))install.packages('class')
+if(!require('e1071'))install.packages('e1071')
+if(!require('reticulate'))install.packages('reticulate')
+if(!require('C50'))install.packages('C50')
+if(!require('randomForest'))install.packages('randomForest')
+if(!require('unbalenced'))devtools::install_github("dalpozz/unbalanced")
+if(!require('smotefamily'))install.packages('smotefamily')
+if(!require('pROC'))install.packages('pROC')
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(caret)
+library(kernlab)
+library(gmodels)
+library(gtools)
+library(stringr)
+library(class)
+library(e1071)
+library(reticulate)
+library(C50)
+library(randomForest)
+library(kableExtra)
+library(unbalanced)
+library(smotefamily)
+library(pROC)
+```
+
+```{python Instalación de las librerías de Python requeridas, include=FALSE, eval=FALSE}
+# Ejecutar solo una vez para instalar las librerías necesarias
+!pip install numpy==1.23
+!pip install seaborn
+!pip install scikit-learn
+!pip install pypi
+!pip install tensorflow
+```
+
+```{python Librerías de Python, include=FALSE}
+# Importamos las diferentes librerías que vamos a usar:
+import numpy as np
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from keras.utils import to_categorical
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score, recall_score, precision_score, ConfusionMatrixDisplay, cohen_kappa_score
+```
+
+# Modelos de clasificación de los microorganismos.
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+# Cargamos los datos
+```{r}
+load("../Datos/Trabajo/driams_a_sin_na.Rdata")
+load("../Datos/Trabajo/driams_b_sin_na.Rdata")
+load("../Datos/Trabajo/driams_c_sin_na.Rdata")
+load("../Datos/Trabajo/driams_d_sin_na.Rdata")
+```
+
+# Selección del dataset con el que se entrenaran los modelos (ejecutar el código que corresponda según el dataset deseado)
+
+```{r DRIAMS A}
+conjunto_datos <- "driams_a"
+datos <- driams_a_sin_na
+columnas_metadatos <- 84
+columnas_masas <- c(85:18085)
+```
+
+```{r DRIAMS B}
+conjunto_datos <- "driams_b"
+datos <- driams_b_sin_na
+columnas_metadatos <- 47
+columnas_masas <- c(48:18048)
+```
+
+```{r DRIAMS C}
+conjunto_datos <- "driams_c"
+datos <- driams_c_sin_na
+columnas_metadatos <- 58
+columnas_masas <- c(59:18059)
+```
+
+```{r DRIAMS D}
+conjunto_datos <- "driams_d"
+datos <- driams_d_sin_na
+columnas_metadatos <- 54
+columnas_masas <- c(55:18055)
+```
+
+# Seleccionamos el microorganismo y el antibiotico (ejecutar el código que corresponda según el microorganismo y antibiotico deseado)
+
+```{r Datos del microorganismo y antibiotico 1}
+microorganismo <- "Escherichia coli"
+antibiotico <- "Ceftriaxone"
+```
+
+```{r Datos del microorganismo y antibiotico 2}
+microorganismo <- "Klebsiella pneumoniae"
+antibiotico <- "Ceftriaxone"
+```
+
+```{r Datos del microorganismo y antibiotico 3}
+microorganismo <- "Enterococcus faecium"
+antibiotico <- "Vancomycin"
+```
+
+```{r Datos del microorganismo y antibiotico 4}
+microorganismo <- "Staphylococcus aureus"
+antibiotico <- "Oxacillin"
+```
+
+
+
+<!--  De aquí en adelante es común -->
+
+
+
+# Pipeline de generación y evaluación de los modelos
+
+```{r}
+bacteria <- datos[datos$species==microorganismo,]
+bacteria_antibiotico <- bacteria[!is.na(bacteria[[antibiotico]]),]
+```
+
+
+```{r}
+# Calcular estadísticas y agregar como filas con formato
+media_sd_bacteria_antibiotico <- data.frame(matrix(data = "-", nrow = 2, ncol = columnas_metadatos, byrow = FALSE, dimnames = NULL),
+  apply(bacteria_antibiotico[,columnas_masas], 2, function(x) c(mean(x), sd(x)))
+)
+colnames(media_sd_bacteria_antibiotico) <- colnames(bacteria_antibiotico)
+rownames(media_sd_bacteria_antibiotico) <- c("Media", "Desviación estándar")
+
+bacteria_antibiotico_msd <- rbind(bacteria_antibiotico, media_sd_bacteria_antibiotico)
+
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+bacteria_antibiotico_p90 <- quantile(t(bacteria_antibiotico_msd[nrow(bacteria_antibiotico_msd),columnas_masas]), 0.9, type = 6)
+
+columnas_bacteria_antibiotico_p90 <- as.character(colnames(bacteria_antibiotico_msd[nrow(bacteria_antibiotico_msd),as.character(seq(2000,20000))])[which(bacteria_antibiotico_msd[nrow(bacteria_antibiotico_msd),as.character(seq(2000,20000))] > bacteria_antibiotico_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(bacteria_antibiotico), size = nrow(bacteria_antibiotico) * 0.75, replace = F)
+# Datos de entrenamiento
+bacteria_antibiotico_espectros_train <- bacteria_antibiotico[train, columnas_bacteria_antibiotico_p90]
+# Datos de test
+bacteria_antibiotico_espectros_test <- bacteria_antibiotico[-train, columnas_bacteria_antibiotico_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+bacteria_antibiotico_train_labels <- bacteria_antibiotico[train, antibiotico]
+bacteria_antibiotico_train_labels <- factor(bacteria_antibiotico_train_labels)
+bacteria_antibiotico_test_labels <- bacteria_antibiotico[-train, antibiotico]
+bacteria_antibiotico_test_labels <- factor(bacteria_antibiotico_test_labels)
+
+# Verificar el número de niveles y transformar las etiquetas 
+
+if (length(levels(bacteria_antibiotico_train_labels)) > 2) { 
+  # Transformar las etiquetas para convertir el nivel 2 a 1 
+  levels(bacteria_antibiotico_train_labels)[levels(bacteria_antibiotico_train_labels) == 2] <- 0
+  
+  }
+if (length(levels(bacteria_antibiotico_test_labels)) > 2) { 
+  # Transformar las etiquetas para convertir el nivel 2 a 1 
+  levels(bacteria_antibiotico_test_labels)[levels(bacteria_antibiotico_test_labels) == 2] <- 0
+  }
+```
+
+
+```{r Balanceado de los datos segun las clases}
+# Balanceamos los datos para entrenar los modelos
+bacteria_antibiotico_balanceado <- DBSMOTE(bacteria_antibiotico_espectros_train, 
+                                        bacteria_antibiotico_train_labels)
+                                        #K=5,
+                                        #C=5,
+                                        #method = "type2")
+bacteria_antibiotico_balanceado_unido <- bacteria_antibiotico_balanceado[["data"]]
+bacteria_antibiotico_balanceado_unido[is.na(bacteria_antibiotico_balanceado_unido)] <- 0
+levels(bacteria_antibiotico_balanceado_unido$class) <- c('0', '1')
+```
+
+# Entranamiento de los modelos y evaluación con datos del centro
+
+```{r Modelo de regresión logística}
+# Cargar el paquete glmnet
+library(glmnet) 
+# Preparar los datos para glmnet 
+x <- model.matrix(class ~ ., bacteria_antibiotico_balanceado_unido)[, -1] 
+y <- bacteria_antibiotico_balanceado_unido$class 
+# Ajustar el modelo Lasso 
+modelo_lasso <- cv.glmnet(x, y, family = "binomial", alpha = 1) 
+# Mejor lambda 
+mejor_lambda <- modelo_lasso$lambda.min 
+# Ajustar el modelo final con el mejor lambda 
+modelo_final <- glmnet(x, y, family = "binomial", alpha = 1, lambda = mejor_lambda) 
+#Resumen del modelo final 
+print(modelo_final)
+
+
+
+# Unir y renombrar la columna de etiquetas 
+bacteria_antibiotico_espectros_test_1 <- cbind(bacteria_antibiotico_espectros_test, bacteria_antibiotico_test_labels)
+colnames(bacteria_antibiotico_espectros_test_1)[colnames(bacteria_antibiotico_espectros_test_1) == "bacteria_antibiotico_test_labels"] <- "class" 
+# Crear la matriz de diseño para el conjunto de prueba 
+bacteria_antibiotico_espectros_test_matrix <- model.matrix(class ~ ., bacteria_antibiotico_espectros_test_1)[, -1] 
+# Predicciones 
+pred_mod_log_prob <- predict(modelo_final, newx = bacteria_antibiotico_espectros_test_matrix, type = "response") 
+pred_mod_log <- ifelse(pred_mod_log_prob > 0.5, 1, 0) 
+# Asegurarse de que las etiquetas de prueba estén en el mismo formato 
+bacteria_antibiotico_test_labels <- factor(bacteria_antibiotico_test_labels, levels = c(0, 1)) 
+# Crear la matriz de confusión y calcular el rendimiento del modelo 
+rendimiento_mod_log <- confusionMatrix(factor(pred_mod_log), bacteria_antibiotico_test_labels, positive = "1")
+```
+
+
+
+```{r Modelo k-nn con 1 vecino}
+espectros_test_pred_1 <- knn(train = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)], 
+                             test = bacteria_antibiotico_espectros_test, 
+                             cl = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                             k = 1, 
+                             prob = TRUE)
+
+
+rendimiento_k1 <- confusionMatrix(espectros_test_pred_1, bacteria_antibiotico_test_labels, positive = "1")
+```
+
+```{r Entrenamiento del modelo Naive Bayes}
+# Laplace = 0
+driams_nb <- naiveBayes(x = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)],
+                        y = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                        laplace = 0)
+
+# Predicciones
+pred_driams_nb <- predict(driams_nb, bacteria_antibiotico_espectros_test)
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_lp0 <- confusionMatrix(pred_driams_nb, bacteria_antibiotico_test_labels, positive = "1")
+```
+
+```{r SVM RBF con 3-fold crossvalidation}
+SVM_RBF <- caret::train(x = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)],
+                        y = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)],
+                        method = "svmRadial",
+                        trControl = trainControl(method = "cv", number = 10),
+                        tuneGrid = NULL, 
+                        trace = FALSE)
+SVM_RBF
+
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF <- predict(SVM_RBF, bacteria_antibiotico_espectros_test)
+
+rendimiento_SVM_RBF <- confusionMatrix(pred_SVM_RBF, bacteria_antibiotico_test_labels, positive = "1")
+```
+
+```{r}
+rf <- randomForest(x = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)],
+                   y = factor(bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)]),
+                   ntree = 1000)
+
+rf
+
+# Predicciones con el modelo Random Forest
+pred_rforest <- predict(rf, bacteria_antibiotico_espectros_test)
+rendimiento_rforest <- confusionMatrix(pred_rforest, bacteria_antibiotico_test_labels, positive = "1")
+```
+
+```{r}
+espectros_train <- bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)]
+etiquetas_train <- bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)]
+```
+
+
+```{python Variables con los datos}
+# Importamos los datos de R 
+espectros_train = r.espectros_train
+espectros_test = r.bacteria_antibiotico_espectros_test
+```
+
+```{python Red neuronal con 2 capa oculta}
+# Definimos el número de clases en las que se pueden clasificar los datos
+num_clases = 2
+
+# Creamos el modelo secuencial
+ann = Sequential()
+
+# Añadimos las diferentes capas al modelo:
+
+# 1. Añadimos la capa de entrada con 1800 nodos 
+# (igual que el número de variables independientes)
+ann.add(Dense(1800, input_dim=1800))
+# 2. Añadimos la capa oculta con 1000 nodos y activación relu
+ann.add(Dense(900, activation="relu"))
+# 3. Añadimos una capa de "dropout" que aplica una probabilidad "x" de descartar 
+# aleatoriamente algunas unidades de la capa anterior. 
+# Esta capa ayuda a prevenir el sobreajuste y a regularizar el modelo. 
+# Esta capa no tiene parámetros, solo modifica los datos de entrada.
+ann.add(Dropout(rate=0.3))
+# 4. Añadimos la segunda capa oculta con 75 nodos y activación relu
+ann.add(Dense(450, activation="relu"))
+# 5. Añadimos otra capa de "dropout"
+ann.add(Dropout(rate=0.3))
+# 4. Por último, añadimos la capa de salida con el mismo número de nodos que categorías 
+# haya en la variable dependiente o de salida. 
+# En este caso la activación es 'softmax' que se encarga de normalizar las salidas 
+# de la capa anterior para que sumen 1 y se puedan interpretar como probabilidades. 
+# El nodo con la mayor probabilidad se elige como la predicción final del modelo.
+ann.add(Dense(num_clases, activation="softmax"))
+
+# Mostramos el resumen del modelo
+ann.summary()
+```
+
+```{python Entrenamiento del modelo de red neuronal con 2 capa oculta, results='hide'}
+# Convertimos las clases en vectores one-hot
+etiquetas_train = r.etiquetas_train
+etiquetas_test = r.bacteria_antibiotico_test_labels
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train)
+etiquetas_test_num = label_encoder.transform(etiquetas_test)
+etiquetas_test_1 = to_categorical(etiquetas_test_num)
+
+
+#label_encoder.fit(etiquetas_train)
+etiquetas_train_num = label_encoder.transform(etiquetas_train)
+etiquetas_train_1 = to_categorical(etiquetas_train_num)
+
+# Compilamos el modelo
+ann.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Número de épocas
+n_epocas = 40
+
+# Entrenamiento del modelo con los parámetros indicados
+ann_fit = ann.fit(espectros_train, 
+                    etiquetas_train_1, 
+                    validation_split=0.2, 
+                    epochs=n_epocas, 
+                    verbose=2)
+```
+
+```{python Función para crear el gráfico de aprendizaje durante el entrenamiento de la red neuronal}
+# Función para generar un gráfico de 'accuracy' y 'loss'
+def plot_prediction(n_epochs, mfit):
+    N = n_epochs
+    plt.style.use("ggplot")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15,6))
+    fig.suptitle('Training Loss and Accuracy')
+    
+    ax1.plot(np.arange(0, N), mfit.history["accuracy"], label="train")
+    ax1.plot(np.arange(0, N), mfit.history["val_accuracy"], label="validation")
+    ax1.set_title("Accuracy")
+    ax1.set_xlabel("Epoch #")
+    ax1.set_ylabel("Accuracy")
+    ax1.legend(loc="lower right")
+    
+    ax2.plot(np.arange(0, N), mfit.history["loss"], label="train")
+    ax2.plot(np.arange(0, N), mfit.history["val_loss"], label="validation")
+    ax2.set_title("Loss")
+    ax2.set_xlabel("Epoch #")
+    ax2.set_ylabel("Loss")
+    ax2.legend(loc="upper right")
+    
+    plt.show()
+```
+
+```{python Gráfico de aprendizaje de la red neuronal con 2 capas oculta}
+# Mostramos el gráfico con la curva de aprendizaje y de pérdida
+plot_prediction(n_epocas, ann_fit) 
+```
+
+```{python Predicciones modelo de red neuronal con 1 capa oculta, results='hide'}
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal = ann.predict(espectros_test)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases = np.argmax(pred_red_neuronal, axis=1)
+clases_pred_decodificadas = label_encoder.inverse_transform(pred_red_neuronal_clases)
+```
+
+```{python}
+# Creamos la matriz de confusión.
+conf_matrix = confusion_matrix(label_encoder.inverse_transform(pred_red_neuronal_clases), etiquetas_test)
+cohen = cohen_kappa_score(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases))
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe1 = classification_report(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases),zero_division=0, output_dict=True)
+accuracy = informe1['accuracy']
+print("Accuracy:")
+print(accuracy, '\n')
+informe1 = classification_report(etiquetas_test, label_encoder.inverse_transform(pred_red_neuronal_clases),zero_division=0)
+print("Informe de clasificación:")
+print(informe1)
+```
+
+```{r Rendimiento de la red neuronal}
+rendimiento_ann <- confusionMatrix(factor(py$clases_pred_decodificadas), factor(py$etiquetas_test), positive = "1")
+```
+
+## Tabla resumen de la evaluación con datos del mismo centro
+
+```{r Tabla resumen de los modelos, echo=FALSE}
+tablaCruzada <- data.frame(c("Regresión logística",
+                             "Modelo k-NN (k = 1)",
+                             "Modelo con Naive Bayes",
+                             "Modelo SVM kernel radial",
+                             "Modelo random forest",
+                             "Red neuronal con 2 capas ocultas"),
+                          round(c(rendimiento_mod_log$overall["Accuracy"],
+                             rendimiento_k1$overall["Accuracy"],
+                             rendimiento_nb_lp0$overall["Accuracy"],
+                             rendimiento_SVM_RBF$overall["Accuracy"],
+                             rendimiento_rforest$overall["Accuracy"],
+                             rendimiento_ann$overall["Accuracy"]),3),
+                          round(c(rendimiento_mod_log$overall["Kappa"],
+                             rendimiento_k1$overall["Kappa"],
+                             rendimiento_nb_lp0$overall["Kappa"],
+                             rendimiento_SVM_RBF$overall["Kappa"],
+                             rendimiento_rforest$overall["Kappa"],
+                             rendimiento_ann$overall["Kappa"]),3),
+                          round(c(rendimiento_mod_log$byClass["Sensitivity"],
+                             rendimiento_k1$byClass["Sensitivity"],
+                             rendimiento_nb_lp0$byClass["Sensitivity"],
+                             rendimiento_SVM_RBF$byClass["Sensitivity"],
+                             rendimiento_rforest$byClass["Sensitivity"],
+                             rendimiento_ann$byClass["Sensitivity"]),3),
+                          round(c(rendimiento_mod_log$byClass["Specificity"],
+                             rendimiento_k1$byClass["Specificity"],
+                             rendimiento_nb_lp0$byClass["Specificity"],
+                             rendimiento_SVM_RBF$byClass["Specificity"],
+                             rendimiento_rforest$byClass["Specificity"],
+                             rendimiento_ann$byClass["Specificity"]),3))
+
+
+colnames(tablaCruzada) <- c("", "Accuracy", "Kappa", "Sensibilidad", "Especificidad")
+
+kable(tablaCruzada, "latex", booktabs = T,
+      align = c("l", "c", "c", "c", "c", "c", "c"), 
+      caption = paste("Tabla de evaluación de los modelos para determinar la resistencia a",antibiotico, "en", microorganismo, "en el conjunto de datos", conjunto_datos ))%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+
+# Evaluación cruzada con los datos de otros centros
+
+```{r definición de los dataset de test}
+set.seed(parametros$semilla)
+# Lista de dataframes 
+dataframes <- list(driams_a = driams_a_sin_na, 
+                   driams_b = driams_b_sin_na, 
+                   driams_c = driams_c_sin_na, 
+                   driams_d = driams_d_sin_na) 
+# Iterar sobre la lista de dataframes 
+for (nombre_df in names(dataframes)) { 
+  # Obtener el dataframe actual 
+  df <- dataframes[[nombre_df]]
+  bacteria <- df[df$species==microorganismo,]
+  bacteria_antibiotico <- bacteria[!is.na(bacteria[[antibiotico]]),]
+  # Seleccionar los datos para test 
+  test <- sample(1:nrow(bacteria_antibiotico), size = nrow(bacteria_antibiotico) * 0.75, replace = FALSE) 
+  # Crear los nombres dinámicamente 
+  nombre_test <- paste0("bacteria_antibiotico_espectros_test_", nombre_df) 
+  nombre_labels <- paste0("bacteria_antibiotico_test_labels_", nombre_df) 
+  # Asignar los datos de test 
+  assign(nombre_test, bacteria_antibiotico[-test, columnas_bacteria_antibiotico_p90]) 
+  # Separar la variable `class` y almacenarla en un vector separado 
+  labels <- bacteria_antibiotico[-test, antibiotico]
+  # Verificar el número de niveles y transformar las etiquetas 
+  if (length(levels(labels)) > 2) { 
+    # Transformar las etiquetas para convertir el nivel 2 a 1 
+    levels(labels)[levels(labels) == 2] <- 0
+    }
+  assign(nombre_labels, factor(labels))
+  }
+```
+
+
+```{r Regresión logística}
+##### DRIAMS A #####
+# Unir y renombrar la columna de etiquetas 
+bacteria_antibiotico_espectros_test_driams_a_rl <- cbind(bacteria_antibiotico_espectros_test_driams_a, bacteria_antibiotico_test_labels_driams_a)
+colnames(bacteria_antibiotico_espectros_test_driams_a_rl)[colnames(bacteria_antibiotico_espectros_test_driams_a_rl) == "bacteria_antibiotico_test_labels_driams_a"] <- "class" 
+
+# Crear la matriz de diseño para el conjunto de prueba 
+bacteria_antibiotico_espectros_test_driams_a_rl_matrix <- model.matrix(class ~ ., bacteria_antibiotico_espectros_test_driams_a_rl)[, -1]
+
+# Predicciones 
+pred_mod_log_prob_driams_a <- predict(modelo_final, newx = bacteria_antibiotico_espectros_test_driams_a_rl_matrix, type = "response") 
+pred_mod_log_driams_a <- ifelse(pred_mod_log_prob_driams_a > 0.5, 1, 0) 
+# Asegurarse de que las etiquetas de prueba estén en el mismo formato 
+bacteria_antibiotico_test_labels_driams_a <- factor(bacteria_antibiotico_test_labels_driams_a, levels = c(0, 1)) 
+# Crear la matriz de confusión y calcular el rendimiento del modelo 
+rendimiento_mod_log_a <- confusionMatrix(factor(pred_mod_log_driams_a), bacteria_antibiotico_test_labels_driams_a, positive = "1")
+
+##### DRIAMS B #####
+# Unir y renombrar la columna de etiquetas 
+bacteria_antibiotico_espectros_test_driams_b_rl <- cbind(bacteria_antibiotico_espectros_test_driams_b, bacteria_antibiotico_test_labels_driams_b)
+colnames(bacteria_antibiotico_espectros_test_driams_b_rl)[colnames(bacteria_antibiotico_espectros_test_driams_b_rl) == "bacteria_antibiotico_test_labels_driams_b"] <- "class" 
+
+# Crear la matriz de diseño para el conjunto de prueba 
+bacteria_antibiotico_espectros_test_driams_b_rl_matrix <- model.matrix(class ~ ., bacteria_antibiotico_espectros_test_driams_b_rl)[, -1]
+
+# Predicciones 
+pred_mod_log_prob_driams_b <- predict(modelo_final, newx = bacteria_antibiotico_espectros_test_driams_b_rl_matrix, type = "response") 
+pred_mod_log_driams_b <- ifelse(pred_mod_log_prob_driams_b > 0.5, 1, 0) 
+# Asegurarse de que las etiquetas de prueba estén en el mismo formato 
+bacteria_antibiotico_test_labels_driams_b <- factor(bacteria_antibiotico_test_labels_driams_b, levels = c(0, 1)) 
+# Crear la matriz de confusión y calcular el rendimiento del modelo 
+rendimiento_mod_log_b <- confusionMatrix(factor(pred_mod_log_driams_b), bacteria_antibiotico_test_labels_driams_b, positive = "1")
+
+##### DRIAMS C #####
+# Unir y renombrar la columna de etiquetas 
+bacteria_antibiotico_espectros_test_driams_c_rl <- cbind(bacteria_antibiotico_espectros_test_driams_c, bacteria_antibiotico_test_labels_driams_c)
+colnames(bacteria_antibiotico_espectros_test_driams_c_rl)[colnames(bacteria_antibiotico_espectros_test_driams_c_rl) == "bacteria_antibiotico_test_labels_driams_c"] <- "class" 
+
+# Crear la matriz de diseño para el conjunto de prueba 
+bacteria_antibiotico_espectros_test_driams_c_rl_matrix <- model.matrix(class ~ ., bacteria_antibiotico_espectros_test_driams_c_rl)[, -1]
+
+# Predicciones 
+pred_mod_log_prob_driams_c <- predict(modelo_final, newx = bacteria_antibiotico_espectros_test_driams_c_rl_matrix, type = "response") 
+pred_mod_log_driams_c <- ifelse(pred_mod_log_prob_driams_c > 0.5, 1, 0) 
+# Asegurarse de que las etiquetas de prueba estén en el mismo formato 
+bacteria_antibiotico_test_labels_driams_c <- factor(bacteria_antibiotico_test_labels_driams_c, levels = c(0, 1)) 
+# Crear la matriz de confusión y calcular el rendimiento del modelo 
+rendimiento_mod_log_c <- confusionMatrix(factor(pred_mod_log_driams_c), bacteria_antibiotico_test_labels_driams_c, positive = "1")
+
+##### DRIAMS D #####
+# Unir y renombrar la columna de etiquetas 
+bacteria_antibiotico_espectros_test_driams_d_rl <- cbind(bacteria_antibiotico_espectros_test_driams_d, bacteria_antibiotico_test_labels_driams_d)
+colnames(bacteria_antibiotico_espectros_test_driams_d_rl)[colnames(bacteria_antibiotico_espectros_test_driams_d_rl) == "bacteria_antibiotico_test_labels_driams_d"] <- "class" 
+
+# Crear la matriz de diseño para el conjunto de prueba 
+bacteria_antibiotico_espectros_test_driams_d_rl_matrix <- model.matrix(class ~ ., bacteria_antibiotico_espectros_test_driams_d_rl)[, -1]
+
+# Predicciones 
+pred_mod_log_prob_driams_d <- predict(modelo_final, newx = bacteria_antibiotico_espectros_test_driams_d_rl_matrix, type = "response") 
+pred_mod_log_driams_d <- ifelse(pred_mod_log_prob_driams_d > 0.5, 1, 0) 
+# Asegurarse de que las etiquetas de prueba estén en el mismo formato 
+bacteria_antibiotico_test_labels_driams_d <- factor(bacteria_antibiotico_test_labels_driams_d, levels = c(0, 1)) 
+# Crear la matriz de confusión y calcular el rendimiento del modelo 
+rendimiento_mod_log_d <- confusionMatrix(factor(pred_mod_log_driams_d), bacteria_antibiotico_test_labels_driams_d, positive = "1")
+```
+
+
+
+```{r k-NN}
+##### DRIAMS A #####
+# Predicciones
+espectros_test_pred_1_a <- knn(train = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)], 
+                             test = bacteria_antibiotico_espectros_test_driams_a, 
+                             cl = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                             k = 1, 
+                             prob = TRUE)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_k1_a <- confusionMatrix(espectros_test_pred_1_a, bacteria_antibiotico_test_labels_driams_a, positive = "1")
+
+
+##### DRIAMS B #####
+# Predicciones
+espectros_test_pred_1_b <- knn(train = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)], 
+                             test = bacteria_antibiotico_espectros_test_driams_b, 
+                             cl = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                             k = 1, 
+                             prob = TRUE)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_k1_b <- confusionMatrix(espectros_test_pred_1_b, bacteria_antibiotico_test_labels_driams_b, positive = "1")
+
+
+##### DRIAMS C #####
+# Predicciones
+espectros_test_pred_1_c <- knn(train = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)], 
+                             test = bacteria_antibiotico_espectros_test_driams_c, 
+                             cl = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                             k = 1, 
+                             prob = TRUE)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_k1_c <- confusionMatrix(espectros_test_pred_1_c, bacteria_antibiotico_test_labels_driams_c, positive = "1")
+
+
+##### DRIAMS D #####
+# Predicciones
+espectros_test_pred_1_d <- knn(train = bacteria_antibiotico_balanceado_unido[, -ncol(bacteria_antibiotico_balanceado_unido)], 
+                             test = bacteria_antibiotico_espectros_test_driams_d, 
+                             cl = bacteria_antibiotico_balanceado_unido[, ncol(bacteria_antibiotico_balanceado_unido)], 
+                             k = 1, 
+                             prob = TRUE)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_k1_d <- confusionMatrix(espectros_test_pred_1_d, bacteria_antibiotico_test_labels_driams_d, positive = "1")
+```
+
+
+```{r Naive Bayes}
+##### DRIAMS A #####
+# Predicciones
+pred_driams_nb_a <- predict(driams_nb, bacteria_antibiotico_espectros_test_driams_a)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_nb_a <- confusionMatrix(pred_driams_nb_a, bacteria_antibiotico_test_labels_driams_a, positive = "1")
+
+##### DRIAMS B #####
+# Predicciones
+pred_driams_nb_b <- predict(driams_nb, bacteria_antibiotico_espectros_test_driams_b)
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_b <- confusionMatrix(pred_driams_nb_b, bacteria_antibiotico_test_labels_driams_b, positive = "1")
+
+##### DRIAMS C #####
+# Predicciones
+pred_driams_nb_c <- predict(driams_nb, bacteria_antibiotico_espectros_test_driams_c)
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_c <- confusionMatrix(pred_driams_nb_c, bacteria_antibiotico_test_labels_driams_c, positive = "1")
+
+##### DRIAMS D #####
+# Predicciones
+pred_driams_nb_d <- predict(driams_nb, bacteria_antibiotico_espectros_test_driams_d)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_nb_d <- confusionMatrix(pred_driams_nb_d, bacteria_antibiotico_test_labels_driams_d, positive = "1")
+```
+
+```{r SVM lineal}
+##### DRIAMS A #####
+# Predicciones con el modelo svmRadial
+pred_SVM_RBF_a <- predict(SVM_RBF, bacteria_antibiotico_espectros_test_driams_a)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_SVM_RBF_a <- confusionMatrix(pred_SVM_RBF_a, bacteria_antibiotico_test_labels_driams_a, positive = "1")
+
+##### DRIAMS B #####
+# Predicciones con el modelo svmRadial
+pred_SVM_RBF_b <- predict(SVM_RBF, bacteria_antibiotico_espectros_test_driams_b)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_SVM_RBF_b <- confusionMatrix(pred_SVM_RBF_b, bacteria_antibiotico_test_labels_driams_b, positive = "1")
+
+##### DRIAMS C #####
+# Predicciones con el modelo svmRadial
+pred_SVM_RBF_c <- predict(SVM_RBF, bacteria_antibiotico_espectros_test_driams_c)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_SVM_RBF_c <- confusionMatrix(pred_SVM_RBF_c, bacteria_antibiotico_test_labels_driams_c, positive = "1")
+
+##### DRIAMS D #####
+# Predicciones con el modelo svmRadial
+pred_SVM_RBF_d <- predict(SVM_RBF, bacteria_antibiotico_espectros_test_driams_d)
+# Matriz de confusión y rendimiento del modelo
+rendimiento_SVM_RBF_d <- confusionMatrix(pred_SVM_RBF_d, bacteria_antibiotico_test_labels_driams_d, positive = "1")
+```
+
+```{r Random forest}
+##### DRIAMS A #####
+# Predicciones con el modelo Random Forest
+pred_rforest_a <- predict(rf, bacteria_antibiotico_espectros_test_driams_a)
+rendimiento_rforest_a <- confusionMatrix(pred_rforest_a, bacteria_antibiotico_test_labels_driams_a, positive = "1")
+pred_rforest_a_auroc <- predict(rf, bacteria_antibiotico_espectros_test_driams_a, type = "prob")[, 2]
+roc_obj_rf_a <- roc(bacteria_antibiotico_test_labels_driams_a, pred_rforest_a_auroc) 
+auroc_rf_a <- auc(roc_obj_rf_a)
+
+##### DRIAMS B #####
+# Predicciones con el modelo Random Forest
+pred_rforest_b <- predict(rf, bacteria_antibiotico_espectros_test_driams_b)
+rendimiento_rforest_b <- confusionMatrix(pred_rforest_b, bacteria_antibiotico_test_labels_driams_b, positive = "1")
+pred_rforest_b_auroc <- predict(rf, bacteria_antibiotico_espectros_test_driams_b, type = "prob")[, 2]
+roc_obj_rf_b <- roc(bacteria_antibiotico_test_labels_driams_b, pred_rforest_b_auroc) 
+auroc_rf_b <- auc(roc_obj_rf_b)
+
+##### DRIAMS C #####
+# Predicciones con el modelo Random Forest
+pred_rforest_c <- predict(rf, bacteria_antibiotico_espectros_test_driams_c)
+rendimiento_rforest_c <- confusionMatrix(pred_rforest_c, bacteria_antibiotico_test_labels_driams_c, positive = "1")
+pred_rforest_c_auroc <- predict(rf, bacteria_antibiotico_espectros_test_driams_c, type = "prob")[, 2]
+roc_obj_rf_c <- roc(bacteria_antibiotico_test_labels_driams_c, pred_rforest_c_auroc) 
+auroc_rf_c <- auc(roc_obj_rf_c)
+
+##### DRIAMS D #####
+# Predicciones con el modelo Random Forest
+pred_rforest_d <- predict(rf, bacteria_antibiotico_espectros_test_driams_d)
+rendimiento_rforest_d <- confusionMatrix(pred_rforest_d, bacteria_antibiotico_test_labels_driams_d, positive = "1")
+pred_rforest_d_auroc <- predict(rf, bacteria_antibiotico_espectros_test_driams_d, type = "prob")[, 2]
+roc_obj_rf_d <- roc(bacteria_antibiotico_test_labels_driams_d, pred_rforest_d_auroc) 
+auroc_rf_d <- auc(roc_obj_rf_d)
+
+par(mfrow=c(2,2))
+plot(roc_obj_rf_a)
+plot(roc_obj_rf_b)
+plot(roc_obj_rf_c)
+plot(roc_obj_rf_d)
+par(mfrow=c(1,1))
+```
+
+```{python}
+####### DRIAMS A ########
+#Importamos las variables desde r
+espectros_test = r.bacteria_antibiotico_espectros_test_driams_a
+etiquetas_test = r.bacteria_antibiotico_test_labels_driams_a
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_a = ann.predict(espectros_test)
+
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_a = np.argmax(pred_red_neuronal_a, axis=1)
+clases_pred_decodificadas_a = label_encoder.inverse_transform(pred_red_neuronal_clases_a)
+```
+
+```{r Rendimiento de la red neuronal A}
+rendimiento_ann_a <- confusionMatrix(factor(py$clases_pred_decodificadas_a), factor(py$etiquetas_test), positive = "1")
+```
+
+```{python}
+####### DRIAMS B ########
+#Importamos las variables desde r
+espectros_test = r.bacteria_antibiotico_espectros_test_driams_b
+etiquetas_test = r.bacteria_antibiotico_test_labels_driams_b
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_b = ann.predict(espectros_test)
+
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_b = np.argmax(pred_red_neuronal_b, axis=1)
+clases_pred_decodificadas_b = label_encoder.inverse_transform(pred_red_neuronal_clases_b)
+```
+
+```{r Rendimiento de la red neuronal B}
+rendimiento_ann_b <- confusionMatrix(factor(py$clases_pred_decodificadas_b), factor(py$etiquetas_test), positive = "1")
+```
+
+```{python}
+####### DRIAMS C ########
+#Importamos las variables desde r
+espectros_test = r.bacteria_antibiotico_espectros_test_driams_c
+etiquetas_test = r.bacteria_antibiotico_test_labels_driams_c
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_c = ann.predict(espectros_test)
+
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_c = np.argmax(pred_red_neuronal_c, axis=1)
+clases_pred_decodificadas_c = label_encoder.inverse_transform(pred_red_neuronal_clases_c)
+```
+
+```{r Rendimiento de la red neuronal C}
+rendimiento_ann_c <- confusionMatrix(factor(py$clases_pred_decodificadas_c), bacteria_antibiotico_test_labels_driams_c, positive = "1")
+```
+
+```{python}
+####### DRIAMS D ########
+#Importamos las variables desde r
+espectros_test = r.bacteria_antibiotico_espectros_test_driams_d
+etiquetas_test = r.bacteria_antibiotico_test_labels_driams_d
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_d = ann.predict(espectros_test)
+
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_d = np.argmax(pred_red_neuronal_d, axis=1)
+clases_pred_decodificadas_d = label_encoder.inverse_transform(pred_red_neuronal_clases_d)
+```
+
+```{r Rendimiento de la red neuronal D}
+rendimiento_ann_d <- confusionMatrix(factor(py$clases_pred_decodificadas_d), factor(py$etiquetas_test), positive = "1")
+```
+
+# Tabla de evaluación cruzada con todos los datasets
+
+```{r Tabla cruzada de los modelos, echo=FALSE}
+tablaCruzadaTodos <- data.frame(c("Regresión logística",
+                             "Modelo k-NN (k = 1)",
+                             "Modelo con Naive Bayes",
+                             "Modelo SVM kernel radial",
+                             "Modelo random forest",
+                             "Red neuronal con 2 capas ocultas"),
+                          round(c(rendimiento_mod_log_a$overall["Accuracy"],
+                             rendimiento_k1_a$overall["Accuracy"],
+                             rendimiento_nb_a$overall["Accuracy"],
+                             rendimiento_SVM_RBF_a$overall["Accuracy"],
+                             rendimiento_rforest_a$overall["Accuracy"],
+                             rendimiento_ann_a$overall["Accuracy"]),3),
+                          round(c(rendimiento_mod_log_a$overall["Kappa"],
+                             rendimiento_k1_a$overall["Kappa"],
+                             rendimiento_nb_a$overall["Kappa"],
+                             rendimiento_SVM_RBF_a$overall["Kappa"],
+                             rendimiento_rforest_a$overall["Kappa"],
+                             rendimiento_ann_a$overall["Kappa"]),3),
+                          round(c(rendimiento_mod_log_a$byClass["Sensitivity"],
+                             rendimiento_k1_a$byClass["Sensitivity"],
+                             rendimiento_nb_a$byClass["Sensitivity"],
+                             rendimiento_SVM_RBF_a$byClass["Sensitivity"],
+                             rendimiento_rforest_a$byClass["Sensitivity"],
+                             rendimiento_ann_a$byClass["Sensitivity"]),3),
+                          round(c(rendimiento_mod_log_a$byClass["Specificity"],
+                             rendimiento_k1_a$byClass["Specificity"],
+                             rendimiento_nb_a$byClass["Specificity"],
+                             rendimiento_SVM_RBF_a$byClass["Specificity"],
+                             rendimiento_rforest_a$byClass["Specificity"],
+                             rendimiento_ann_a$byClass["Specificity"]),3),
+                          round(c(rendimiento_mod_log_b$overall["Accuracy"],
+                             rendimiento_k1_b$overall["Accuracy"],
+                             rendimiento_nb_b$overall["Accuracy"],
+                             rendimiento_SVM_RBF_b$overall["Accuracy"],
+                             rendimiento_rforest_b$overall["Accuracy"],
+                             rendimiento_ann_b$overall["Accuracy"]),3),
+                          round(c(rendimiento_mod_log_b$overall["Kappa"],
+                             rendimiento_k1_b$overall["Kappa"],
+                             rendimiento_nb_b$overall["Kappa"],
+                             rendimiento_SVM_RBF_b$overall["Kappa"],
+                             rendimiento_rforest_b$overall["Kappa"],
+                             rendimiento_ann_b$overall["Kappa"]),3),
+                          round(c(rendimiento_mod_log_b$byClass["Sensitivity"],
+                             rendimiento_k1_b$byClass["Sensitivity"],
+                             rendimiento_nb_b$byClass["Sensitivity"],
+                             rendimiento_SVM_RBF_b$byClass["Sensitivity"],
+                             rendimiento_rforest_b$byClass["Sensitivity"],
+                             rendimiento_ann_b$byClass["Sensitivity"]),3),
+                          round(c(rendimiento_mod_log_b$byClass["Specificity"],
+                             rendimiento_k1_b$byClass["Specificity"],
+                             rendimiento_nb_b$byClass["Specificity"],
+                             rendimiento_SVM_RBF_b$byClass["Specificity"],
+                             rendimiento_rforest_b$byClass["Specificity"],
+                             rendimiento_ann_b$byClass["Specificity"]),3),
+                          round(c(rendimiento_mod_log_c$overall["Accuracy"],
+                             rendimiento_k1_c$overall["Accuracy"],
+                             rendimiento_nb_c$overall["Accuracy"],
+                             rendimiento_SVM_RBF_c$overall["Accuracy"],
+                             rendimiento_rforest_c$overall["Accuracy"],
+                             rendimiento_ann_c$overall["Accuracy"]),3),
+                          round(c(rendimiento_mod_log_c$overall["Kappa"],
+                             rendimiento_k1_c$overall["Kappa"],
+                             rendimiento_nb_c$overall["Kappa"],
+                             rendimiento_SVM_RBF_c$overall["Kappa"],
+                             rendimiento_rforest_c$overall["Kappa"],
+                             rendimiento_ann_c$overall["Kappa"]),3),
+                          round(c(rendimiento_mod_log_c$byClass["Sensitivity"],
+                             rendimiento_k1_c$byClass["Sensitivity"],
+                             rendimiento_nb_c$byClass["Sensitivity"],
+                             rendimiento_SVM_RBF_c$byClass["Sensitivity"],
+                             rendimiento_rforest_c$byClass["Sensitivity"],
+                             rendimiento_ann_c$byClass["Sensitivity"]),3),
+                          round(c(rendimiento_mod_log_c$byClass["Specificity"],
+                             rendimiento_k1_c$byClass["Specificity"],
+                             rendimiento_nb_c$byClass["Specificity"],
+                             rendimiento_SVM_RBF_c$byClass["Specificity"],
+                             rendimiento_rforest_c$byClass["Specificity"],
+                             rendimiento_ann_c$byClass["Specificity"]),3),
+                          round(c(rendimiento_mod_log_d$overall["Accuracy"],
+                             rendimiento_k1_d$overall["Accuracy"],
+                             rendimiento_nb_d$overall["Accuracy"],
+                             rendimiento_SVM_RBF_d$overall["Accuracy"],
+                             rendimiento_rforest_d$overall["Accuracy"],
+                             rendimiento_ann_d$overall["Accuracy"]),3),
+                          round(c(rendimiento_mod_log_d$overall["Kappa"],
+                             rendimiento_k1_d$overall["Kappa"],
+                             rendimiento_nb_d$overall["Kappa"],
+                             rendimiento_SVM_RBF_d$overall["Kappa"],
+                             rendimiento_rforest_d$overall["Kappa"],
+                             rendimiento_ann_d$overall["Kappa"]),3),
+                          round(c(rendimiento_mod_log_d$byClass["Sensitivity"],
+                             rendimiento_k1_d$byClass["Sensitivity"],
+                             rendimiento_nb_d$byClass["Sensitivity"],
+                             rendimiento_SVM_RBF_d$byClass["Sensitivity"],
+                             rendimiento_rforest_d$byClass["Sensitivity"],
+                             rendimiento_ann_d$byClass["Sensitivity"]),3),
+                          round(c(rendimiento_mod_log_d$byClass["Specificity"],
+                             rendimiento_k1_d$byClass["Specificity"],
+                             rendimiento_nb_d$byClass["Specificity"],
+                             rendimiento_SVM_RBF_d$byClass["Specificity"],
+                             rendimiento_rforest_d$byClass["Specificity"],
+                             rendimiento_ann_d$byClass["Specificity"]),3))
+
+
+colnames(tablaCruzadaTodos) <- c("", "Accuracy", "Kappa", "Sensibilidad", "Especificidad", "Accuracy", "Kappa", "Sensibilidad", "Especificidad", "Accuracy", "Kappa", "Sensibilidad", "Especificidad", "Accuracy", "Kappa", "Sensibilidad", "Especificidad")
+
+kable(tablaCruzadaTodos, "latex", booktabs = T,
+      align = c("l", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c", "c"), 
+      caption = paste("Tabla de evaluación cruzada de los modelos entrenados con", conjunto_datos, "para determinar la resistencia a",antibiotico, "en", microorganismo ))%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))%>%
+add_header_above(c(" " = 1,
+                   "DRIAMS A" = 4,
+                   "DRIAMS B" = 4,
+                   "DRIAMS C" = 4, 
+                   "DRIAMS D" = 4))
+```

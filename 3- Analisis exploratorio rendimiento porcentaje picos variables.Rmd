@@ -1,0 +1,814 @@
+---
+title: "Analisis exploratorio rendimiento porcentaje picos variables"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('caret'))install.packages('caret')
+if(!require('kernlab'))install.packages('kernlab')
+if(!require('gmodels'))install.packages('gmodels')
+if(!require('gtools'))install.packages('gtools')
+if(!require('stringr'))install.packages('stringr')
+if(!require('class'))install.packages('class')
+if(!require('e1071'))install.packages('e1071')
+if(!require('reticulate'))install.packages('reticulate')
+if(!require('C50'))install.packages('C50')
+if(!require('randomForest'))install.packages('randomForest')
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(caret)
+library(kernlab)
+library(gmodels)
+library(gtools)
+library(stringr)
+library(class)
+library(e1071)
+library(reticulate)
+library(C50)
+library(randomForest)
+library(kableExtra)
+```
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+# Importar datos
+
+```{r Importamos los datos}
+load("./Datos/Trabajo/driams_b_sin_na.Rdata")
+load("./Datos/Trabajo/driams_b_media_sd.Rdata")
+```
+
+```{r Datasets con diferentes porcentajes}
+summary(t(driams_b_media_sd[4993,48:18048]))
+
+##### USANDO EL 30% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p70 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.7, type = 6)
+
+columnas_driams_b_p70 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p70)])
+
+cat("Usando el 30% de los picos más variables nos quedamos con", length(columnas_driams_b_p70),"picos\n")
+
+##### USANDO EL 25% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p75 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.75, type = 6)
+
+columnas_driams_b_p75 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p75)])
+
+cat("Usando el 25% de los picos más variables nos quedamos con", length(columnas_driams_b_p75),"picos\n")
+
+
+##### USANDO EL 20% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p80 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.8, type = 6)
+
+columnas_driams_b_p80 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p80)])
+
+cat("Usando el 20% de los picos más variables nos quedamos con", length(columnas_driams_b_p80),"picos\n")
+
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p90 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.9, type = 6)
+
+columnas_driams_b_p90 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p90)])
+
+cat("Usando el 10% de los picos más variables nos quedamos con", length(columnas_driams_b_p90),"picos\n")
+
+##### USANDO EL 5% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p95 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.95, type = 6)
+
+columnas_driams_b_p95 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p95)])
+
+cat("Usando el 5% de los picos más variables nos quedamos con", length(columnas_driams_b_p95),"picos\n")
+```
+
+```{r Seleccionando los dataset para los modelos}
+set.seed(parametros$semilla)
+train_b <- sample(1:nrow(driams_b_sin_na), size = nrow(driams_b_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_b <- driams_b_sin_na[train_b, 48:18048]
+# Datos de test
+espectros_test_b <- driams_b_sin_na[-train_b, 48:18048]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_b_labels <- driams_b_sin_na[train_b, 2]
+espectros_train_b_labels <- as.factor(espectros_train_b_labels)
+espectros_test_b_labels <- driams_b_sin_na[-train_b, 2]
+espectros_test_b_labels <- as.factor(espectros_test_b_labels)
+```
+
+```{r Datasets con los diferentes porcentajes de picos}
+train30 = espectros_train_b[,columnas_driams_b_p70]
+test30 = espectros_test_b[,columnas_driams_b_p70]
+
+train25 = espectros_train_b[,columnas_driams_b_p75]
+test25 = espectros_test_b[,columnas_driams_b_p75]
+
+train20 = espectros_train_b[,columnas_driams_b_p80]
+test20 = espectros_test_b[,columnas_driams_b_p80]
+
+train10 = espectros_train_b[,columnas_driams_b_p90]
+test10 = espectros_test_b[,columnas_driams_b_p90]
+
+train5 = espectros_train_b[,columnas_driams_b_p95]
+test5 = espectros_test_b[,columnas_driams_b_p95]
+```
+
+# Modelos k-NN
+
+```{r Entrenamiento del modelo knn1 100}
+knn1_100_pred <- knn(train = espectros_train_b, test = espectros_test_b,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b100 <- confusionMatrix(knn1_100_pred, espectros_test_b_labels)
+rendimiento_k1_b100
+```
+
+```{r Entrenamiento del modelo knn1 30}
+knn1_30_pred <- knn(train = train30, test = test30,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b30 <- confusionMatrix(knn1_30_pred, espectros_test_b_labels)
+rendimiento_k1_b30
+```
+
+```{r Entrenamiento del modelo knn1 25}
+knn1_25_pred <- knn(train = train25, test = test25,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b25 <- confusionMatrix(knn1_25_pred, espectros_test_b_labels)
+rendimiento_k1_b25
+```
+
+```{r Entrenamiento del modelo knn1 20}
+knn1_20_pred <- knn(train = train20, test = test20,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b20 <- confusionMatrix(knn1_20_pred, espectros_test_b_labels)
+rendimiento_k1_b20
+```
+
+```{r Entrenamiento del modelo knn1 10}
+knn1_10_pred <- knn(train = train10, test = test10,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b10 <- confusionMatrix(knn1_10_pred, espectros_test_b_labels)
+rendimiento_k1_b10
+```
+
+```{r Entrenamiento del modelo knn1 5}
+knn1_5_pred <- knn(train = train5, test = test5,
+                        cl = espectros_train_b_labels, k = 1)
+
+
+rendimiento_k1_b5 <- confusionMatrix(knn1_5_pred, espectros_test_b_labels)
+rendimiento_k1_b5
+```
+
+```{r Tabla resumen de los modelos k-Nearest Neighbors, echo=FALSE}
+tablaResumen_knn_porcentajes <- data.frame(c("Modelo k-NN (k = 1) DRIAMS B (100% de los picos)",
+                             "Modelo k-NN (k = 1) DRIAMS B (30% más variable)",
+                             "Modelo k-NN (k = 1) DRIAMS B (25% más variable)",
+                             "Modelo k-NN (k = 1) DRIAMS B (20% más variable)",
+                             "Modelo k-NN (k = 1) DRIAMS B (10% más variable)",
+                             "Modelo k-NN (k = 1) DRIAMS B (5% más variable)"),
+                          round(c(rendimiento_k1_b100$overall["Accuracy"],
+                             rendimiento_k1_b30$overall["Accuracy"],
+                             rendimiento_k1_b25$overall["Accuracy"],
+                             rendimiento_k1_b20$overall["Accuracy"],
+                             rendimiento_k1_b10$overall["Accuracy"],
+                             rendimiento_k1_b5$overall["Accuracy"]),3),
+                          round(c(rendimiento_k1_b100$overall["Kappa"],
+                             rendimiento_k1_b30$overall["Kappa"],
+                             rendimiento_k1_b25$overall["Kappa"],
+                             rendimiento_k1_b20$overall["Kappa"],
+                             rendimiento_k1_b10$overall["Kappa"],
+                             rendimiento_k1_b5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_knn_porcentajes) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_knn_porcentajes, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos _k_-Nearest Neighbors")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+# Modelos Naive BAyes
+
+```{r Entrenamiento del modelo Naive Bayes DRIAMS B}
+
+nb100 <- naiveBayes(espectros_train_b, espectros_train_b_labels, laplace = 0)
+
+nb30 <- naiveBayes(train30, espectros_train_b_labels, laplace = 0)
+
+nb25 <- naiveBayes(train25, espectros_train_b_labels, laplace = 0)
+
+nb20 <- naiveBayes(train20, espectros_train_b_labels, laplace = 0)
+
+nb10 <- naiveBayes(train10, espectros_train_b_labels, laplace = 0)
+
+nb5 <- naiveBayes(train5, espectros_train_b_labels, laplace = 0)
+
+# Predicciones
+pred_nb100 <- predict(nb100, espectros_test_b)
+pred_nb30 <- predict(nb30, test30)
+pred_nb25 <- predict(nb25, test25)
+pred_nb20 <- predict(nb20, test20)
+pred_nb10 <- predict(nb10, test10)
+pred_nb5 <- predict(nb5, test5)
+```
+
+```{r Evaluación del rendimiento de los modelos Naive Bayes}
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb100 <- confusionMatrix(pred_nb100, as.factor(espectros_test_b_labels))
+rendimiento_nb100
+
+rendimiento_nb30 <- confusionMatrix(pred_nb30, as.factor(espectros_test_b_labels))
+rendimiento_nb30
+
+rendimiento_nb25 <- confusionMatrix(pred_nb25, as.factor(espectros_test_b_labels))
+rendimiento_nb25
+
+rendimiento_nb20 <- confusionMatrix(pred_nb20, as.factor(espectros_test_b_labels))
+rendimiento_nb20
+
+rendimiento_nb10 <- confusionMatrix(pred_nb10, as.factor(espectros_test_b_labels))
+rendimiento_nb10
+
+rendimiento_nb5 <- confusionMatrix(pred_nb5, as.factor(espectros_test_b_labels))
+rendimiento_nb5
+```
+
+```{r Tabla resumen de los modelos Naive Bayes, echo=FALSE}
+tablaResumen_nb_porcentajes <- data.frame(c("Modelo con Naive Bayes sin Laplace DRIAMS B (100% de los picos)",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B (30% más variable)",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B (25% más variable)",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B (20% más variable)",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B (10% más variable)",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B (5% más variable)"),
+                          round(c(rendimiento_nb100$overall["Accuracy"],
+                             rendimiento_nb30$overall["Accuracy"],
+                             rendimiento_nb25$overall["Accuracy"],
+                             rendimiento_nb20$overall["Accuracy"],
+                             rendimiento_nb10$overall["Accuracy"],
+                             rendimiento_nb5$overall["Accuracy"]),3),
+                          round(c(rendimiento_nb100$overall["Kappa"],
+                             rendimiento_nb30$overall["Kappa"],
+                             rendimiento_nb25$overall["Kappa"],
+                             rendimiento_nb20$overall["Kappa"],
+                             rendimiento_nb10$overall["Kappa"],
+                             rendimiento_nb5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_nb_porcentajes) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_nb_porcentajes, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos Naive Bayes")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+# Modelos SVM
+
+```{r SVM con kernel lineal y validación 3-fold crossvalidation}
+
+###############   100%    ##################
+train100_SVM <- cbind(espectros_train_b_labels,espectros_train_b)
+colnames(train100_SVM) <- c("species", colnames(espectros_train_b))
+
+test100_SVM <- cbind(espectros_test_b_labels,espectros_test_b)
+colnames(test100_SVM) <- c("species", colnames(espectros_test_b))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_100 <- train(x = espectros_train_b, y = espectros_train_b_labels, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_100
+
+
+###############   30%    ##################
+train30_SVM <- cbind(espectros_train_b_labels,train30)
+colnames(train30_SVM) <- c("species", colnames(train30))
+
+test30_SVM <- cbind(espectros_test_b_labels,test30)
+colnames(test30_SVM) <- c("species", colnames(test30))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_30 <- train(species~., train30_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_30
+
+###############   25%    ##################
+
+train25_SVM <- cbind(espectros_train_b_labels,train25)
+colnames(train25_SVM) <- c("species", colnames(train25))
+
+test25_SVM <- cbind(espectros_test_b_labels,test25)
+colnames(test25_SVM) <- c("species", colnames(test25))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_25 <- train(species~., train25_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_25
+
+
+
+###############   20%    ##################
+
+train20_SVM <- cbind(espectros_train_b_labels,train20)
+colnames(train20_SVM) <- c("species", colnames(train20))
+
+test20_SVM <- cbind(espectros_test_b_labels,test20)
+colnames(test20_SVM) <- c("species", colnames(test20))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_20 <- train(species~., train20_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_20
+
+
+
+###############   10%    ##################
+
+train10_SVM <- cbind(espectros_train_b_labels,train10)
+colnames(train10_SVM) <- c("species", colnames(train10))
+
+test10_SVM <- cbind(espectros_test_b_labels,test10)
+colnames(test10_SVM) <- c("species", colnames(test10))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_10 <- train(species~., train10_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_10
+
+###############   5%    ##################
+train5_SVM <- cbind(espectros_train_b_labels, train5)
+colnames(train5_SVM) <- c("species", colnames(train5))
+
+test5_SVM <- cbind(espectros_test_b_labels,test5)
+colnames(test5_SVM) <- c("species", colnames(test5))
+
+
+# SVM con kernel lineal con 3-fold crossvalidation
+SVM_5 <- train(species~., train5_SVM, method = "svmLinear",
+                     trControl = trainControl(method = "cv", number = 3),
+                     tuneGrid = NULL, trace = FALSE)
+SVM_5
+
+```
+
+```{r Evaluación de los modelos SVM}
+# Predicciones con el modelo svmLinear 100%
+pred_SVM100 <- predict(SVM_100, espectros_test_b)
+
+cmSVM_100 <- table(pred_SVM100, espectros_test_b_labels) 
+rendimiento_SVM_100 <- confusionMatrix(cmSVM_100)
+rendimiento_SVM_100
+
+# Predicciones con el modelo svmLinear 30%
+pred_SVM30 <- predict(SVM_30, test30_SVM)
+
+cmSVM_30 <- table(pred_SVM30, test30_SVM$species) 
+rendimiento_SVM_30 <- confusionMatrix(cmSVM_30)
+rendimiento_SVM_30 
+
+# Predicciones con el modelo svmLinear 25%
+pred_SVM25 <- predict(SVM_25, test25_SVM)
+
+cmSVM_25 <- table(pred_SVM25, test25_SVM$species) 
+rendimiento_SVM_25 <- confusionMatrix(cmSVM_25)
+rendimiento_SVM_25 
+
+# Predicciones con el modelo svmLinear 20%
+pred_SVM20 <- predict(SVM_20, test20_SVM)
+
+cmSVM_20 <- table(pred_SVM20, test20_SVM$species) 
+rendimiento_SVM_20 <- confusionMatrix(cmSVM_20)
+rendimiento_SVM_20 
+
+# Predicciones con el modelo svmLinear 10%
+pred_SVM10 <- predict(SVM_10, test10_SVM)
+
+cmSVM_10 <- table(pred_SVM10, test10_SVM$species) 
+rendimiento_SVM_10 <- confusionMatrix(cmSVM_10)
+rendimiento_SVM_10 
+
+# Predicciones con el modelo svmLinear 5%
+pred_SVM5 <- predict(SVM_5, test5_SVM)
+
+cmSVM_5 <- table(pred_SVM5, test5_SVM$species) 
+rendimiento_SVM_5 <- confusionMatrix(cmSVM_5)
+rendimiento_SVM_5
+```
+
+```{r Tabla resumen de los modelos SVM, echo=FALSE}
+tablaResumen_SVM_porcentajes <- data.frame(c("Modelo SVM kernel lineal y 3 CV DRIAMS B (100% de los picos)",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B (30% más variable)",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B (25% más variable)",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B (20% más variable)",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B (10% más variable)",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B (5% más variable)"),
+                          round(c(rendimiento_SVM_100$overall["Accuracy"],
+                             rendimiento_SVM_30$overall["Accuracy"],
+                             rendimiento_SVM_25$overall["Accuracy"],
+                             rendimiento_SVM_20$overall["Accuracy"],
+                             rendimiento_SVM_10$overall["Accuracy"],
+                             rendimiento_SVM_5$overall["Accuracy"]),3),
+                          round(c(rendimiento_SVM_100$overall["Kappa"],
+                             rendimiento_SVM_30$overall["Kappa"],
+                             rendimiento_SVM_25$overall["Kappa"],
+                             rendimiento_SVM_20$overall["Kappa"],
+                             rendimiento_SVM_10$overall["Kappa"],
+                             rendimiento_SVM_5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_SVM_porcentajes) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_SVM_porcentajes, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos Naive Bayes")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+# Modelos Decision tree
+
+```{r Modelo "decision tree" con boosting (10 trials)}
+# Fijamos la semilla para los cálculos aleatorios
+set.seed(parametros$semilla)
+# Entrenamos el modelo de árbol de decisión elegido con nuestros datos. En este caso
+# vamos a usar un boost de 10 intentos con el objetivo de hacer a nuestro modelo más
+# preciso y robusto
+
+## 100% ##
+dtree_100 <- C5.0(espectros_train_b, as.factor(espectros_train_b_labels), trials = 10)
+dtree_100
+
+## 30% ##
+dtree_30 <- C5.0(train30, as.factor(espectros_train_b_labels), trials = 10)
+dtree_30
+
+## 25% ##
+dtree_25 <- C5.0(train25, as.factor(espectros_train_b_labels), trials = 10)
+dtree_25
+
+## 20% ##
+dtree_20 <- C5.0(train20, as.factor(espectros_train_b_labels), trials = 10)
+dtree_20
+
+## 10% ##
+dtree_10 <- C5.0(train10, as.factor(espectros_train_b_labels), trials = 10)
+dtree_10
+
+## 5% ##
+dtree_5 <- C5.0(train5, as.factor(espectros_train_b_labels), trials = 10)
+dtree_5
+```
+
+```{r Predicciones y evaluación del rendimiento del modelo "decision tree" con boosting}
+## 100% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_100 <- predict(dtree_100, espectros_test_b)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_100 <- confusionMatrix(pred_dtree_100, as.factor(espectros_test_b_labels))
+rendimiento_dtree_100
+
+## 30% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_30 <- predict(dtree_30, test30)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_30 <- confusionMatrix(pred_dtree_30, as.factor(espectros_test_b_labels))
+rendimiento_dtree_30
+
+## 25% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_25 <- predict(dtree_25, test25)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_25 <- confusionMatrix(pred_dtree_25, as.factor(espectros_test_b_labels))
+rendimiento_dtree_25
+
+## 20% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_20 <- predict(dtree_20, test20)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_20 <- confusionMatrix(pred_dtree_20, as.factor(espectros_test_b_labels))
+rendimiento_dtree_20
+
+## 10% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_10 <- predict(dtree_10, test10)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_10 <- confusionMatrix(pred_dtree_10, as.factor(espectros_test_b_labels))
+rendimiento_dtree_10
+
+## 5% ##
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_5 <- predict(dtree_5, test5)
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_5 <- confusionMatrix(pred_dtree_5, as.factor(espectros_test_b_labels))
+rendimiento_dtree_5
+```
+
+```{r Tabla resumen de los modelos decision tree, echo=FALSE}
+tablaResumen_dtree_porcentajes <- data.frame(c("Modelo decision tree (boost 10 trials) DRIAMS B (100% de picos)",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B (30% más variable)",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B (25% más variable)",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B (20% más variable)",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B (10% más variable)",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B (5% más variable)"),
+                          round(c(rendimiento_dtree_100$overall["Accuracy"],
+                             rendimiento_dtree_30$overall["Accuracy"],
+                             rendimiento_dtree_25$overall["Accuracy"],
+                             rendimiento_dtree_20$overall["Accuracy"],
+                             rendimiento_dtree_10$overall["Accuracy"],
+                             rendimiento_dtree_5$overall["Accuracy"]),3),
+                          round(c(rendimiento_dtree_100$overall["Kappa"],
+                             rendimiento_dtree_30$overall["Kappa"],
+                             rendimiento_dtree_25$overall["Kappa"],
+                             rendimiento_dtree_20$overall["Kappa"],
+                             rendimiento_dtree_10$overall["Kappa"],
+                             rendimiento_dtree_5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_dtree_porcentajes) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_dtree_porcentajes, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos Naive Bayes")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+# Modelos random forest
+
+```{r Modelo "random forest" con 100 árboles}
+###  100%  ###
+rforest_100 <- randomForest(espectros_train_b, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_100
+
+###  30%  ###
+rforest_30 <- randomForest(train30, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_30
+
+###  25%  ###
+rforest_25 <- randomForest(train25, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_25
+
+###  20%  ###
+rforest_20 <- randomForest(train20, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_20
+
+###  10%  ###
+rforest_10 <- randomForest(train10, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_10
+
+###  5%  ###
+rforest_5 <- randomForest(train5, as.factor(espectros_train_b_labels), ntree = 100)
+rforest_5
+```
+
+```{r Predicciones y evaluación del rendimiento del modelo "random forest" con 100 árboles}
+### 100% ###
+pred_rforest_100 <- predict(rforest_100, espectros_test_b)
+rendimiento_rforest_100 <- confusionMatrix(pred_rforest_100, as.factor(espectros_test_b_labels))
+rendimiento_rforest_100
+
+### 30% ###
+pred_rforest_30 <- predict(rforest_30, test30)
+rendimiento_rforest_30 <- confusionMatrix(pred_rforest_30, as.factor(espectros_test_b_labels))
+rendimiento_rforest_30
+
+### 25% ###
+pred_rforest_25 <- predict(rforest_25, test25)
+rendimiento_rforest_25 <- confusionMatrix(pred_rforest_25, as.factor(espectros_test_b_labels))
+rendimiento_rforest_25
+
+### 20% ###
+pred_rforest_20 <- predict(rforest_20, test20)
+rendimiento_rforest_20 <- confusionMatrix(pred_rforest_20, as.factor(espectros_test_b_labels))
+rendimiento_rforest_20
+
+### 10% ###
+pred_rforest_10 <- predict(rforest_10, test10)
+rendimiento_rforest_10 <- confusionMatrix(pred_rforest_10, as.factor(espectros_test_b_labels))
+rendimiento_rforest_10
+
+### 5% ###
+pred_rforest_5 <- predict(rforest_5, test5)
+rendimiento_rforest_5 <- confusionMatrix(pred_rforest_5, as.factor(espectros_test_b_labels))
+rendimiento_rforest_5
+```
+
+```{r Tabla resumen de los modelos random forest, echo=FALSE}
+tablaResumen_rforest_porcentajes <- data.frame(c("Modelo random forest (100 arboles) DRIAMS B (100% de los picos)",
+                             "Modelo random forest (100 arboles) DRIAMS B (30% más variable)",
+                             "Modelo random forest (100 arboles) DRIAMS B (25% más variable)",
+                             "Modelo random forest (100 arboles) DRIAMS B (20% más variable)",
+                             "Modelo random forest (100 arboles) DRIAMS B (10% más variable)",
+                             "Modelo random forest (100 arboles) DRIAMS B (5% más variable)"),
+                          round(c(rendimiento_rforest_100$overall["Accuracy"],
+                             rendimiento_rforest_30$overall["Accuracy"],
+                             rendimiento_rforest_25$overall["Accuracy"],
+                             rendimiento_rforest_20$overall["Accuracy"],
+                             rendimiento_rforest_10$overall["Accuracy"],
+                             rendimiento_rforest_5$overall["Accuracy"]),3),
+                          round(c(rendimiento_rforest_100$overall["Kappa"],
+                             rendimiento_rforest_30$overall["Kappa"],
+                             rendimiento_rforest_25$overall["Kappa"],
+                             rendimiento_rforest_20$overall["Kappa"],
+                             rendimiento_rforest_10$overall["Kappa"],
+                             rendimiento_rforest_5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_rforest_porcentajes) <- c("", "Accuracy", "Kappa")
+
+kable(tablaResumen_rforest_porcentajes, "latex", booktabs = T,
+      align = c("l", "c", "c"), 
+      caption = "Tabla resumen de los modelos _k_-Nearest Neighbors")%>%
+  kable_styling(latex_options = c("scale_down", "hold_position"))
+```
+
+# Archivo de guardado con los modelos generados
+
+```{r Guardamos los modelos generados}
+save(nb5, nb10, nb20, nb25, nb30, nb100,
+     SVM_5, SVM_10, SVM_20, SVM_25, SVM_30,SVM_100,
+     dtree_5, dtree_10, dtree_20, dtree_25, dtree_30,dtree_100,
+     rforest_5, rforest_10, rforest_20, rforest_25, rforest_30,rforest_100,
+     file="Resultados/Modelos/analisis_exploratorio_porcentajes.Rdata")
+```
+
+
+# Tabla resumen del rendimiento de los diferentes modelos
+
+```{r Tabla resumen de los modelos, echo=FALSE}
+tablaResumen_porcentajes <- data.frame(c("Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo k-NN (k = 1) DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo con Naive Bayes sin Laplace DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo SVM kernel lineal y 3 CV DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo decision tree (boost 10 trials) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B",
+                             "Modelo random forest (100 arboles) DRIAMS B"),
+                             c("(100% de los picos)",
+                             "(30% más variable)",
+                             "(25% más variable)",
+                             "(20% más variable)",
+                             "(10% más variable)",
+                             "(5% más variable)",
+                             "(100% de los picos)",
+                             "(30% más variable)",
+                             "(25% más variable)",
+                             "(20% más variable)",
+                             "(10% más variable)",
+                             "(5% más variable)",
+                             "(100% de los picos)",
+                             "(30% más variable)",
+                             "(25% más variable)",
+                             "(20% más variable)",
+                             "(10% más variable)",
+                             "(5% más variable)",
+                             "(100% de los picos)",
+                             "(30% más variable)",
+                             "(25% más variable)",
+                             "(20% más variable)",
+                             "(10% más variable)",
+                             "(5% más variable)",
+                             "(100% de los picos)",
+                             "(30% más variable)",
+                             "(25% más variable)",
+                             "(20% más variable)",
+                             "(10% más variable)",
+                             "(5% más variable)"),
+                          round(c(rendimiento_k1_b30$overall["Accuracy"],
+                             rendimiento_k1_b100$overall["Accuracy"],
+                             rendimiento_k1_b25$overall["Accuracy"],
+                             rendimiento_k1_b20$overall["Accuracy"],
+                             rendimiento_k1_b10$overall["Accuracy"],
+                             rendimiento_k1_b5$overall["Accuracy"],
+                             rendimiento_nb100$overall["Accuracy"],
+                             rendimiento_nb30$overall["Accuracy"],
+                             rendimiento_nb25$overall["Accuracy"],
+                             rendimiento_nb20$overall["Accuracy"],
+                             rendimiento_nb10$overall["Accuracy"],
+                             rendimiento_nb5$overall["Accuracy"],
+                             rendimiento_SVM_100$overall["Accuracy"],
+                             rendimiento_SVM_30$overall["Accuracy"],
+                             rendimiento_SVM_25$overall["Accuracy"],
+                             rendimiento_SVM_20$overall["Accuracy"],
+                             rendimiento_SVM_10$overall["Accuracy"],
+                             rendimiento_SVM_5$overall["Accuracy"],
+                             rendimiento_dtree_100$overall["Accuracy"],
+                             rendimiento_dtree_30$overall["Accuracy"],
+                             rendimiento_dtree_25$overall["Accuracy"],
+                             rendimiento_dtree_20$overall["Accuracy"],
+                             rendimiento_dtree_10$overall["Accuracy"],
+                             rendimiento_dtree_5$overall["Accuracy"],
+                             rendimiento_rforest_100$overall["Accuracy"],
+                             rendimiento_rforest_30$overall["Accuracy"],
+                             rendimiento_rforest_25$overall["Accuracy"],
+                             rendimiento_rforest_20$overall["Accuracy"],
+                             rendimiento_rforest_10$overall["Accuracy"],
+                             rendimiento_rforest_5$overall["Accuracy"]),3),
+                          round(c(rendimiento_k1_b100$overall["Kappa"],
+                             rendimiento_k1_b30$overall["Kappa"],
+                             rendimiento_k1_b25$overall["Kappa"],
+                             rendimiento_k1_b20$overall["Kappa"],
+                             rendimiento_k1_b10$overall["Kappa"],
+                             rendimiento_k1_b5$overall["Kappa"],
+                             rendimiento_nb100$overall["Kappa"],
+                             rendimiento_nb30$overall["Kappa"],
+                             rendimiento_nb25$overall["Kappa"],
+                             rendimiento_nb20$overall["Kappa"],
+                             rendimiento_nb10$overall["Kappa"],
+                             rendimiento_nb5$overall["Kappa"],
+                             rendimiento_SVM_100$overall["Kappa"],
+                             rendimiento_SVM_30$overall["Kappa"],
+                             rendimiento_SVM_25$overall["Kappa"],
+                             rendimiento_SVM_20$overall["Kappa"],
+                             rendimiento_SVM_10$overall["Kappa"],
+                             rendimiento_SVM_5$overall["Kappa"],
+                             rendimiento_dtree_100$overall["Kappa"],
+                             rendimiento_dtree_30$overall["Kappa"],
+                             rendimiento_dtree_25$overall["Kappa"],
+                             rendimiento_dtree_20$overall["Kappa"],
+                             rendimiento_dtree_10$overall["Kappa"],
+                             rendimiento_dtree_5$overall["Kappa"],
+                             rendimiento_rforest_100$overall["Kappa"],
+                             rendimiento_rforest_30$overall["Kappa"],
+                             rendimiento_rforest_25$overall["Kappa"],
+                             rendimiento_rforest_20$overall["Kappa"],
+                             rendimiento_rforest_10$overall["Kappa"],
+                             rendimiento_rforest_5$overall["Kappa"]),3))
+
+
+colnames(tablaResumen_porcentajes) <- c("", "", "Accuracy", "Kappa")
+
+kable(tablaResumen_porcentajes, "latex", booktabs = T, align = c("l", "l", "c", "c"), 
+      caption = "Tabla resumen")%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))%>%
+kable_paper(full_width = F) %>%
+column_spec(1, bold = T) %>%
+collapse_rows(columns = 1, valign = "top")
+```

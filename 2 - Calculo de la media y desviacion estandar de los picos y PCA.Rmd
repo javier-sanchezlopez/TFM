@@ -1,0 +1,560 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Librerias}
+library(zoo)
+library(factoextra)
+library(ggbiplot)
+```
+
+
+# Importamos los datos
+
+```{r Importamos los datos preprocesados}
+load("./Datos/Trabajo/driams_a_filtrado.Rdata")
+load("./Datos/Trabajo/driams_b_filtrado.Rdata")
+load("./Datos/Trabajo/driams_c_filtrado.Rdata")
+load("./Datos/Trabajo/driams_d_filtrado.Rdata")
+```
+
+# Cálculo de la varianza de los picos
+
+```{r Cálculo de la varianza de los picos DRIAMS A}
+# Importamos los datos filtrados que hemos obtenido en el paso anterior
+driams_a_sin_na <- datos_trabajo_filtrados_a[,as.character(seq(2000,20000))]
+# Sustituimos los NA por 0. Esto se puede hacer ya que la estructura de los archivos de espectros de masas no almacenan información si para alguna de las variables no hay lectura, con el objetivo de ahorrar espacio, por tanto los NA en realidad son medidas de 0.
+driams_a_sin_na[is.na(driams_a_sin_na)] <- 0
+# Unimos los metadatos y los datos de espectros en un mismo dataset
+driams_a_sin_na <- cbind(datos_trabajo_filtrados_a[,1:84], driams_a_sin_na)
+#Lo guardamos en un archivo para trabajar con el posteriormente
+save(driams_a_sin_na, file=paste0(parametros$datos,"Trabajo/", "driams_a_sin_na.Rdata"))
+
+# Calcular estadísticas y agregar como filas con formato
+# Media y SD para cada columna
+media_sd_a <- data.frame(matrix(data = "-", nrow = 2, ncol = 84, byrow = FALSE, dimnames = NULL),
+  apply(driams_a_sin_na[,85:18085], 2, function(x) c(mean(x), sd(x)))
+)
+colnames(media_sd_a) <- colnames(driams_a_sin_na)
+rownames(media_sd_a) <- c("Media", "Desviación estándar")
+
+# Unimos esta información al dataset
+driams_a_media_sd <- rbind(driams_a_sin_na, media_sd_a)
+#Lo guardamos en un archivo para trabajar con el posteriormente
+save(driams_a_media_sd, file=paste0(parametros$datos,"Trabajo/", "driams_a_media_sd.Rdata"))
+```
+
+```{r Cálculo de la varianza de los picos DRIAMS B}
+# Igual que el previo pero con los datos de DRIAMS B
+driams_b_sin_na <- datos_trabajo_filtrados_b[,as.character(seq(2000,20000))]
+driams_b_sin_na[is.na(driams_b_sin_na)] <- 0
+driams_b_sin_na <- cbind(datos_trabajo_filtrados_b[,1:47], driams_b_sin_na)
+save(driams_b_sin_na, file=paste0(parametros$datos,"Trabajo/", "driams_b_sin_na.Rdata"))
+
+# Calcular estadísticas y agregar como filas con formato
+media_sd_b <- data.frame(matrix(data = "-", nrow = 2, ncol = 47, byrow = FALSE, dimnames = NULL),
+  apply(driams_b_sin_na[,48:18048], 2, function(x) c(mean(x), sd(x)))
+)
+colnames(media_sd_b) <- colnames(driams_b_sin_na)
+rownames(media_sd_b) <- c("Media", "Desviación estándar")
+
+driams_b_media_sd <- rbind(driams_b_sin_na, media_sd_b)
+save(driams_b_media_sd, file=paste0(parametros$datos,"Trabajo/", "driams_b_media_sd.Rdata"))
+```
+
+
+```{r Cálculo de la varianza de los picos DRIAMS C}
+# Igual que el previo pero con los datos de DRIAMS C
+driams_c_sin_na <- datos_trabajo_filtrados_c[,as.character(seq(2000,20000))]
+driams_c_sin_na[is.na(driams_c_sin_na)] <- 0
+driams_c_sin_na <- cbind(datos_trabajo_filtrados_c[,1:58], driams_c_sin_na)
+save(driams_c_sin_na, file=paste0(parametros$datos,"Trabajo/", "driams_c_sin_na.Rdata"))
+
+# Calcular estadísticas y agregar como filas con formato
+media_sd_c <- data.frame(matrix(data = "-", nrow = 2, ncol = 58, byrow = FALSE, dimnames = NULL),
+  apply(driams_c_sin_na[,59:18059], 2, function(x) c(mean(x), sd(x)))
+)
+colnames(media_sd_c) <- colnames(driams_c_sin_na)
+rownames(media_sd_c) <- c("Media", "Desviación estándar")
+
+driams_c_media_sd <- rbind(driams_c_sin_na, media_sd_c)
+save(driams_c_media_sd, file=paste0(parametros$datos,"Trabajo/", "driams_c_media_sd.Rdata"))
+```
+
+```{r Cálculo de la varianza de los picos DRIAMS D}
+# Igual que el previo pero con los datos de DRIAMS D
+driams_d_sin_na <- datos_trabajo_filtrados_d[,as.character(seq(2000,20000))]
+driams_d_sin_na[is.na(driams_d_sin_na)] <- 0
+driams_d_sin_na <- cbind(datos_trabajo_filtrados_d[,1:54], driams_d_sin_na)
+save(driams_d_sin_na, file=paste0(parametros$datos,"Trabajo/", "driams_d_sin_na.Rdata"))
+
+# Calcular estadísticas y agregar como filas con formato
+media_sd_d <- data.frame(matrix(data = "-", nrow = 2, ncol = 54, byrow = FALSE, dimnames = NULL),
+  apply(driams_d_sin_na[,55:18055], 2, function(x) c(mean(x), sd(x)))
+)
+colnames(media_sd_d) <- colnames(driams_d_sin_na)
+rownames(media_sd_d) <- c("Media", "Desviación estándar")
+
+driams_d_media_sd <- rbind(driams_d_sin_na, media_sd_d)
+save(driams_d_media_sd, file=paste0(parametros$datos,"Trabajo/", "driams_d_media_sd.Rdata"))
+```
+
+# Análisis de los datos por componentes principales
+
+## DRIAMS-A
+
+```{r PCA de todos los espectros en conjunto DRIAMS A}
+# Análisis de componentes principales
+pca_driams_a <- prcomp(driams_a_sin_na[,85:18085])
+#summary(pca_driams_a)
+save(pca_driams_a, file=paste0(parametros$resultados,"PCA/", "pca_driams_a.Rdata"))
+```
+
+```{r Representacion gráfica PCA DRIAMS A}
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_a, addlabels = TRUE)
+
+# Biplot de las 2 primeras componentes principales
+ggbiplot(pca_driams_a, obs.scale = 1, var.scale = 1, groups = as.factor(driams_a_sin_na$species), ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+theme(legend.direction = "horizontal", legend.position = "none")
+
+```
+
+
+```{r PCA 10% mas variable DRIAMS A}
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+summary(t(driams_a_media_sd[27601,85:18085]))
+
+# Se calcula el valor del percentil 90 con mayor desviación típica
+driams_a_p90 <- quantile(t(driams_a_media_sd[27601,85:18085]), 0.9, type = 6)
+
+# Se seleccionan los datos cuya desviación estantar es superior a dicho percentil, el 10% más variable de los picos
+columnas_driams_a_p90 <- as.character(colnames(driams_a_media_sd[27601,as.character(seq(2000,20000))])[which(driams_a_media_sd[27601,as.character(seq(2000,20000))] >driams_a_p90)])
+
+# Análisis de componentes principales del 10% mas variable
+pca_driams_a_90 <- prcomp(driams_a_media_sd[-c(27600,27601),columnas_driams_a_p90])
+#summary(pca_driams_a_90)
+save(pca_driams_a_90, file=paste0(parametros$resultados,"PCA/", "pca_driams_a_10.Rdata"))
+```
+
+```{r Representacion gráfica PCA con el 10% más variable DRIAMS A }
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_a_90, addlabels = T)
+
+ggbiplot(pca_driams_a_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_a_media_sd$species[-c(27600,27601)]),
+         varname.size = 1, 
+         varname.color = "black",
+         varname.adjust = 1.2,
+         ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+## DRAIMS B
+
+```{r PCA de todos los espectros en conjunto DRIAMS B}
+# Análisis de componentes principales
+pca_driams_b <- prcomp(driams_b_sin_na[,48:18048])
+summary(pca_driams_b)
+save(pca_driams_b, file=paste0(parametros$resultados,"PCA/", "pca_driams_b.Rdata"))
+
+
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_b, addlabels = TRUE)
+
+# Biplot de las 2 primeras componentes principales
+ggbiplot(pca_driams_b, obs.scale = 1, var.scale = 1, groups = as.factor(driams_b_sin_na$species), ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+```{r PCA 10% mas variable DRIAMS B}
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+summary(t(driams_b_media_sd[4993,48:18048]))
+
+# Se calcula el valor del percentil 90 con mayor desviación típica
+driams_b_p90 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.9, type = 6)
+
+# Se seleccionan los datos cuya desviación estantar es superior a dicho percentil, el 10% más variable de los picos
+columnas_driams_b_p90 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p90)])
+
+# Análisis de componentes principales del 10% mas variable
+pca_driams_b_90 <- prcomp(driams_b_media_sd[-c(4992,4993),columnas_driams_b_p90])
+summary(pca_driams_b_90)
+save(pca_driams_b_90, file=paste0(parametros$resultados,"PCA/", "pca_driams_b_10.Rdata"))
+
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_b_90, addlabels = T)
+
+ggbiplot(pca_driams_b_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_b_media_sd$species[-c(4992,4993)]),
+         varname.size = 1, 
+         varname.color = "black",
+         varname.adjust = 1,
+         ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+Como podemos observar en los gráficos, si utilizamos el 30% de los datos más variables se explica de manera prácticamente igual la distribución de los datos que si usamos la totalidad de ellos, por tanto vamos a usar este porcentaje de datos más variables para realizar posteriores análisis.
+
+## DRIAMS C
+
+```{r PCA de todos los espectros en conjunto DRIAMS C}
+# Análisis de componentes principales
+pca_driams_c <- prcomp(driams_c_sin_na[,59:18059])
+summary(pca_driams_c)
+save(pca_driams_c, file=paste0(parametros$resultados,"PCA/", "pca_driams_c.Rdata"))
+```
+
+```{r Representacion gráfica PCA DRIAMS C}
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_c, addlabels = TRUE)
+
+# Biplot de las 2 primeras componentes principales
+ggbiplot(pca_driams_c, obs.scale = 1, var.scale = 1, groups = as.factor(driams_c_sin_na$species), ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+
+```{r PCA 10% mas variable DRIAMS C}
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+summary(t(driams_c_media_sd[4409,59:18059]))
+
+# Se calcula el valor del percentil 90 con mayor desviación típica
+driams_c_p90 <- quantile(t(driams_c_media_sd[4409,59:18059]), 0.9, type = 6)
+
+# Se seleccionan los datos cuya desviación estantar es superior a dicho percentil, el 10% más variable de los picos
+columnas_driams_c_p90 <- as.character(colnames(driams_c_media_sd[4409,as.character(seq(2000,20000))])[which(driams_c_media_sd[4409,as.character(seq(2000,20000))] >driams_c_p90)])
+
+# Análisis de componentes principales del 10% mas variable
+pca_driams_c_90 <- prcomp(driams_c_media_sd[-c(4408,4409),columnas_driams_c_p90])
+summary(pca_driams_c_90)
+save(pca_driams_c_90, file=paste0(parametros$resultados,"PCA/", "pca_driams_c_10.Rdata"))
+```
+
+```{r Representacion gráfica PCA con el 10% más variable DRIAMS C }
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_c_90, addlabels = T)
+
+ggbiplot(pca_driams_c_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_c_media_sd$species[-c(4408,4409)]),
+         varname.size = 1, 
+         varname.color = "black",
+         ellipse = TRUE, 
+         circle = TRUE, 
+         var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+## DRIAMS D
+
+```{r PCA de todos los espectros en conjunto DRIAMS D}
+# Análisis de componentes principales
+pca_driams_d <- prcomp(driams_d_sin_na[,55:18055])
+summary(pca_driams_d)
+save(pca_driams_d, file=paste0(parametros$resultados,"PCA/", "pca_driams_d.Rdata"))
+```
+
+```{r Representacion gráfica PCA DRIAMS D}
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_d, addlabels = TRUE)
+
+# Biplot de las 2 primeras componentes principales
+ggbiplot(pca_driams_d, obs.scale = 1, var.scale = 1, groups = as.factor(driams_d_sin_na$species), ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+
+```{r PCA 10% mas variable DRIAMS D}
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+
+summary(t(driams_d_media_sd[10391,55:18055]))
+
+# Se calcula el valor del percentil 90 con mayor desviación típica
+driams_d_p90 <- quantile(t(driams_d_media_sd[10391,55:18055]), 0.9, type = 6) 
+
+# Se seleccionan los datos cuya desviación estantar es superior a dicho percentil, el 10% más variable de los picos
+columnas_driams_d_p90 <- as.character(colnames(driams_d_media_sd[10391,as.character(seq(2000,20000))])[which(driams_d_media_sd[10391,as.character(seq(2000,20000))] >driams_d_p90)])
+
+# Análisis de componentes principales del 10% mas variable
+pca_driams_d_90 <- prcomp(driams_d_media_sd[-c(10390,10391),columnas_driams_d_p90])
+#summary(pca_driams_d_90)
+save(pca_driams_d_90, file=paste0(parametros$resultados,"PCA/", "pca_driams_d_10.Rdata"))
+```
+
+```{r Representacion gráfica PCA con el 10% más variable DRIAMS D }
+# Gráfico del peso de las componentes
+fviz_eig(pca_driams_d_90, addlabels = T)
+
+ggbiplot(pca_driams_d_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_d_media_sd$species[-c(10390,10391)]),
+         varname.size = 1, 
+         varname.color = "black",
+         varname.adjust = 1.2,
+         ellipse = TRUE, circle = TRUE, var.axes = T) +
+scale_color_discrete(name = "") +
+#theme(legend.direction = "horizontal", legend.position = "top")
+theme(legend.direction = "horizontal", legend.position = "none")
+```
+
+# Gráficos para la memoria
+
+```{r Gráficos para la memoria DRIAMS A}
+# Gráfico del peso de las componentes con el espectro completo
+plot1 <- fviz_eig(pca_driams_a, 
+                  addlabels = TRUE, 
+                  main = "a)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot de las 2 primeras componentes principales con el espectro completo
+plot2 <- ggbiplot(pca_driams_a, obs.scale = 1, var.scale = 1, 
+                  groups = as.factor(driams_a_sin_na$species),
+                  varname.size = 1, 
+                  varname.color = "black",
+                  ellipse = TRUE, 
+                  circle = TRUE, 
+                  var.axes = F) +
+        ggtitle("b)") + 
+        scale_color_discrete(name = "") +
+        theme(legend.direction = "horizontal", legend.position = "none")
+
+
+# Gráfico del peso de las componentes con el 10% de los picos
+plot3 <- fviz_eig(pca_driams_a_90, 
+                  addlabels = TRUE,
+                  main = "c)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot con el 10% de los picos
+plot4 <- ggbiplot(pca_driams_a_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_a_sin_na$species),
+         varname.size = 1, 
+         varname.color = "black",
+         ellipse = TRUE, 
+         circle = TRUE, 
+         var.axes = F) +
+         ggtitle("d)") + 
+         scale_color_discrete(name = "") +
+         theme(legend.direction = "horizontal", legend.position = "none")
+
+# Crear textos como grobs 
+title1 <- textGrob("PCA con el espectro completo", gp=gpar(fontsize=14, fontface="bold")) 
+title2 <- textGrob("PCA con el 10% de las variables", gp=gpar(fontsize=14, fontface="bold"))
+
+# Agrupar gráficos de la primera fila con su título 
+first_row <- arrangeGrob(plot1, plot2, nrow = 1) 
+second_row <- arrangeGrob(plot3, plot4, nrow = 1) 
+# Disponer los gráficos en una cuadrícula con títulos 
+grid.arrange( title1, first_row, 
+              title2, second_row, 
+              nrow = 4, 
+              heights = c(0.1, 1, 0.1, 1) # Ajustar la altura de las filas para los títulos y los gráficos 
+              )
+```
+
+```{r Gráficos para la memoria DRIAMS B}
+# Gráfico del peso de las componentes con el espectro completo
+plot1 <- fviz_eig(pca_driams_b, 
+                  addlabels = TRUE, 
+                  main = "a)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot de las 2 primeras componentes principales con el espectro completo
+plot2 <- ggbiplot(pca_driams_b, obs.scale = 1, var.scale = 1, 
+                  groups = as.factor(driams_b_sin_na$species),
+                  varname.size = 1, 
+                  varname.color = "black",
+                  ellipse = TRUE, 
+                  circle = TRUE, 
+                  var.axes = F) +
+        ggtitle("b)") + 
+        scale_color_discrete(name = "") +
+        theme(legend.direction = "horizontal", legend.position = "none")
+
+
+# Gráfico del peso de las componentes con el 10% de los picos
+plot3 <- fviz_eig(pca_driams_b_90, 
+                  addlabels = TRUE,
+                  main = "c)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot con el 10% de los picos
+plot4 <- ggbiplot(pca_driams_b_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_b_sin_na$species),
+         varname.size = 1, 
+         varname.color = "black",
+         ellipse = TRUE, 
+         circle = TRUE, 
+         var.axes = F) +
+         ggtitle("d)") + 
+         scale_color_discrete(name = "") +
+         theme(legend.direction = "horizontal", legend.position = "none")
+
+# Crear textos como grobs 
+title1 <- textGrob("PCA con el espectro completo", gp=gpar(fontsize=14, fontface="bold")) 
+title2 <- textGrob("PCA con el 10% de las variables", gp=gpar(fontsize=14, fontface="bold"))
+
+# Agrupar gráficos de la primera fila con su título 
+first_row <- arrangeGrob(plot1, plot2, nrow = 1) 
+second_row <- arrangeGrob(plot3, plot4, nrow = 1) 
+# Disponer los gráficos en una cuadrícula con títulos 
+grid.arrange( title1, first_row, 
+              title2, second_row, 
+              nrow = 4, 
+              heights = c(0.1, 1, 0.1, 1) # Ajustar la altura de las filas para los títulos y los gráficos 
+              )
+```
+
+```{r Gráficos para la memoria DRIAMS C}
+# Gráfico del peso de las componentes con el espectro completo
+plot1 <- fviz_eig(pca_driams_c, 
+                  addlabels = TRUE, 
+                  main = "a)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot de las 2 primeras componentes principales con el espectro completo
+plot2 <- ggbiplot(pca_driams_c, obs.scale = 1, var.scale = 1, 
+                  groups = as.factor(driams_c_sin_na$species),
+                  varname.size = 1, 
+                  varname.color = "black",
+                  ellipse = TRUE, 
+                  circle = TRUE, 
+                  var.axes = F) +
+        ggtitle("b)") + 
+        scale_color_discrete(name = "") +
+        theme(legend.direction = "horizontal", legend.position = "none")
+
+
+# Gráfico del peso de las componentes con el 10% de los picos
+plot3 <- fviz_eig(pca_driams_c_90, 
+                  addlabels = TRUE,
+                  main = "c)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot con el 10% de los picos
+plot4 <- ggbiplot(pca_driams_c_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_c_media_sd$species[-c(4408,4409)]),
+         varname.size = 1, 
+         varname.color = "black",
+         ellipse = TRUE, 
+         circle = TRUE, 
+         var.axes = F) +
+         ggtitle("d)") + 
+         scale_color_discrete(name = "") +
+         theme(legend.direction = "horizontal", legend.position = "none")
+
+# Crear textos como grobs 
+title1 <- textGrob("PCA con el espectro completo", gp=gpar(fontsize=14, fontface="bold")) 
+title2 <- textGrob("PCA con el 10% de las variables", gp=gpar(fontsize=14, fontface="bold"))
+
+# Agrupar gráficos de la primera fila con su título 
+first_row <- arrangeGrob(plot1, plot2, nrow = 1) 
+second_row <- arrangeGrob(plot3, plot4, nrow = 1) 
+# Disponer los gráficos en una cuadrícula con títulos 
+grid.arrange( title1, first_row, 
+              title2, second_row, 
+              nrow = 4, 
+              heights = c(0.1, 1, 0.1, 1) # Ajustar la altura de las filas para los títulos y los gráficos 
+              )
+```
+
+```{r Gráficos para la memoria DRIAMS D}
+# Gráfico del peso de las componentes con el espectro completo
+plot1 <- fviz_eig(pca_driams_d, 
+                  addlabels = TRUE, 
+                  main = "a)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot de las 2 primeras componentes principales con el espectro completo
+plot2 <- ggbiplot(pca_driams_d, obs.scale = 1, var.scale = 1, 
+                  groups = as.factor(driams_d_sin_na$species),
+                  varname.size = 1, 
+                  varname.color = "black",
+                  ellipse = TRUE, 
+                  circle = TRUE, 
+                  var.axes = F) +
+        ggtitle("b)") + 
+        scale_color_discrete(name = "") +
+        theme(legend.direction = "horizontal", legend.position = "none")
+
+
+# Gráfico del peso de las componentes con el 10% de los picos
+plot3 <- fviz_eig(pca_driams_d_90, 
+                  addlabels = TRUE,
+                  main = "c)",
+                  xlab = "Componentes principales",
+                  ylab = "Porcentaje de la varianza explicado")
+
+# Biplot con el 10% de los picos
+plot4 <- ggbiplot(pca_driams_d_90, obs.scale = 1, var.scale = 1, 
+         groups = as.factor(driams_d_sin_na$species),
+         varname.size = 1, 
+         varname.color = "black",
+         ellipse = TRUE, 
+         circle = TRUE, 
+         var.axes = F) +
+         ggtitle("d)") + 
+         scale_color_discrete(name = "") +
+         theme(legend.direction = "horizontal", legend.position = "none")
+
+# Crear textos como grobs 
+title1 <- textGrob("PCA con el espectro completo", gp=gpar(fontsize=14, fontface="bold")) 
+title2 <- textGrob("PCA con el 10% de las variables", gp=gpar(fontsize=14, fontface="bold"))
+
+# Agrupar gráficos de la primera fila con su título 
+first_row <- arrangeGrob(plot1, plot2, nrow = 1) 
+second_row <- arrangeGrob(plot3, plot4, nrow = 1) 
+# Disponer los gráficos en una cuadrícula con títulos 
+grid.arrange( title1, first_row, 
+              title2, second_row, 
+              nrow = 4, 
+              heights = c(0.1, 1, 0.1, 1) # Ajustar la altura de las filas para los títulos y los gráficos 
+              )
+```

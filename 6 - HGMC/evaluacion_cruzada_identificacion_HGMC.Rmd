@@ -1,0 +1,957 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('caret'))install.packages('caret')
+if(!require('kernlab'))install.packages('kernlab')
+if(!require('gmodels'))install.packages('gmodels')
+if(!require('gtools'))install.packages('gtools')
+if(!require('stringr'))install.packages('stringr')
+if(!require('class'))install.packages('class')
+if(!require('e1071'))install.packages('e1071')
+if(!require('reticulate'))install.packages('reticulate')
+if(!require('C50'))install.packages('C50')
+if(!require('randomForest'))install.packages('randomForest')
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(caret)
+library(kernlab)
+library(gmodels)
+library(gtools)
+library(stringr)
+library(class)
+library(e1071)
+library(reticulate)
+library(C50)
+library(randomForest)
+library(kableExtra)
+```
+
+```{python Instalación de las librerías de Python requeridas, include=FALSE, eval=FALSE}
+# Ejecutar solo una vez para instalar las librerías necesarias
+!pip install numpy==1.23
+!pip install seaborn
+!pip install scikit-learn
+!pip install pypi
+!pip install tensorflow
+```
+
+```{python Librerías de Python, include=FALSE}
+# Importamos las diferentes librerías que vamos a usar:
+import numpy as np
+import seaborn as sns
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from keras.utils import to_categorical
+import matplotlib.pyplot as plt
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, f1_score, recall_score, precision_score, ConfusionMatrixDisplay, cohen_kappa_score
+```
+
+# Modelos de clasificación de los microorganismos.
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+
+# Evaluación cruzada
+
+## Modelos de DRIAMS A
+
+```{r Cargamos los modelos de DRIAMS A}
+load("../modelos clasificacion microorganismos/driams_a/modelos_driams_a.Rdata")
+```
+
+
+```{r Datos de DRIAMS A}
+load("../Datos/Trabajo/driams_a_sin_na.Rdata")
+load("../Datos/Trabajo/driams_a_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_a_p90 <- quantile(t(driams_a_media_sd[27601,85:18085]), 0.9, type = 6)
+
+columnas_driams_a_p90 <- as.character(colnames(driams_a_media_sd[27601,as.character(seq(2000,20000))])[which(driams_a_media_sd[27601,as.character(seq(2000,20000))] >driams_a_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_a_sin_na), size = nrow(driams_a_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_a <- driams_a_sin_na[train, columnas_driams_a_p90]
+# Datos de test
+espectros_test_a <- driams_a_sin_na[-train, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels_a <- driams_a_sin_na[train, 2]
+
+espectros_test_labels_a <- driams_a_sin_na[-train, 2]
+
+
+clases <- length(levels(as.factor(driams_a_sin_na[, 2])))
+```
+
+### Con datos de HGMC
+
+```{r Importación de los datos de test de HHGMC}
+load("./trabajo/datos_trabajo_HGMC.Rdata")
+
+espectros_test_HGMC <- datos_trabajo_HGMC[, columnas_driams_a_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_HGMC <- datos_trabajo_HGMC[, 2]
+espectros_test_labels_HGMC <- factor(espectros_test_labels_HGMC)
+
+# Datos para los modelos SVM
+test_SVM_HGMC <- cbind(espectros_test_labels_HGMC,espectros_test_HGMC)
+colnames(test_SVM_HGMC) <- c("species", colnames(espectros_test_HGMC))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en a y en HGMC
+especies_da <- levels(factor(driams_a_sin_na$species))
+especies_HGMC <- levels(espectros_test_labels_HGMC) 
+especies_comunes_a_HGMC <- intersect(especies_da, especies_HGMC) 
+print(especies_comunes_a_HGMC)
+```
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+niveles_da <- levels(factor(espectros_train_labels_a))
+etiquetas_test_HGMC_niveles_da <- factor(espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC], levels = niveles_da)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS A evaluación HGMC}
+knn1_da_HGMC <- knn(train = espectros_train_a,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ],
+                  cl = espectros_train_labels_a, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_da_HGMC <- confusionMatrix(knn1_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_knn1_da_HGMC
+```
+
+```{r k-NN (k_3) DRIAMS A evaluación HGMC}
+knn3_da_HGMC <- knn(train = espectros_train_a,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ],
+                  cl = espectros_train_labels_a, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_da_HGMC <- confusionMatrix(knn3_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_knn3_da_HGMC
+```
+
+```{r k-NN (k_5) DRIAMS A evaluacion HGMC}
+knn5_da_HGMC <- knn(train = espectros_train_a,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ],
+                  cl = espectros_train_labels_a, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_da_HGMC <- confusionMatrix(knn5_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_knn5_da_HGMC
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS A evaluación HGMC}
+pred_nb_da_HGMC <- predict(driams_nb, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_da_HGMC <- confusionMatrix(pred_nb_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_nb_da_HGMC
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS A evaluación HGMC}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_da_HGMC <- predict(SVM_3fold, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC,])
+
+
+rendimiento_SVM_lineal_da_HGMC <- confusionMatrix(pred_SVM_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_SVM_lineal_da_HGMC
+```
+
+```{r Modelo SVM radial DRIAMS A evaluación HGMC}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_da_HGMC <- predict(SVM_RBF, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC,])
+
+
+rendimiento_SVM_RBF_da_HGMC <- confusionMatrix(pred_SVM_RBF_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_SVM_RBF_da_HGMC
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS A evaluación HGMC}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_da_HGMC <- predict(decision_tree_boost, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_da_HGMC <- confusionMatrix(pred_dtree_boost_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_dtree_boost_da_HGMC
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS A evaluación HGMC}
+pred_rforest_da_HGMC <- predict(rforest, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ])
+
+rendimiento_rforest_da_HGMC <- confusionMatrix(pred_rforest_da_HGMC, etiquetas_test_HGMC_niveles_da)
+rendimiento_rforest_da_HGMC
+```
+
+#### Evaluación del rendimiento en redes neuronales
+```{r}
+espectros_test_HGMC_ann <- espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC, ]
+etiquetas_test_HGMC_ann <- espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_a_HGMC]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_a/red_neuronal_driams_a.h5')
+# Importamos los datos de R
+etiquetas_train_a = r.espectros_train_labels_a
+espectros_test_HGMC = r.espectros_test_HGMC_ann
+etiquetas_test_HGMC = np.array(r.etiquetas_test_HGMC_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_a)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_da_HGMC = ann.predict(espectros_test_HGMC)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_da_HGMC = np.argmax(pred_red_neuronal_da_HGMC, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_da = r.niveles_da
+conf_matrix_da_HGMC = confusion_matrix(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_da_HGMC), labels=niveles_da)
+cohen_da_HGMC = cohen_kappa_score(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_da_HGMC), labels=niveles_da)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_da_HGMC,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_da_HGMC, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_da_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_da_HGMC), zero_division=0, output_dict=True)
+accuracy_da_HGMC = informe_rend_da_HGMC['accuracy']
+print("Accuracy:")
+print(accuracy_da_HGMC, '\n')
+informe_rend_da_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_da_HGMC), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_da_HGMC)
+```
+
+## Modelos de DRIAMS B
+
+```{r Cargamos los modelos de DRIAMS B}
+load("../modelos clasificacion microorganismos/driams_b/modelos_driams_b.Rdata")
+```
+
+
+```{r Datos de DRIAMS B}
+load("../Datos/Trabajo/driams_b_sin_na.Rdata")
+load("../Datos/Trabajo/driams_b_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_b_p90 <- quantile(t(driams_b_media_sd[4993,48:18048]), 0.9, type = 6)
+
+columnas_driams_b_p90 <- as.character(colnames(driams_b_media_sd[4993,as.character(seq(2000,20000))])[which(driams_b_media_sd[4993,as.character(seq(2000,20000))] >driams_b_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_b_sin_na), size = nrow(driams_b_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_b <- driams_b_sin_na[train, columnas_driams_b_p90]
+# Datos de test
+espectros_test_b <- driams_b_sin_na[-train, columnas_driams_b_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels_b <- driams_b_sin_na[train, 2]
+
+espectros_test_labels_b <- driams_b_sin_na[-train, 2]
+
+
+clases <- length(levels(as.factor(driams_b_sin_na[, 2])))
+```
+
+### Con datos de HGMC
+
+```{r Importación de los datos de test de HHGMC}
+load("./trabajo/datos_trabajo_HGMC.Rdata")
+
+espectros_test_HGMC <- datos_trabajo_HGMC[, columnas_driams_b_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_HGMC <- datos_trabajo_HGMC[, 2]
+espectros_test_labels_HGMC <- factor(espectros_test_labels_HGMC)
+
+# Datos para los modelos SVM
+test_SVM_HGMC <- cbind(espectros_test_labels_HGMC,espectros_test_HGMC)
+colnames(test_SVM_HGMC) <- c("species", colnames(espectros_test_HGMC))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en a y en HGMC
+especies_db <- levels(factor(driams_b_sin_na$species))
+especies_HGMC <- levels(espectros_test_labels_HGMC) 
+especies_comunes_b_HGMC <- intersect(especies_db, especies_HGMC) 
+print(especies_comunes_b_HGMC)
+```
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+niveles_db <- levels(factor(espectros_train_labels_b))
+etiquetas_test_HGMC_niveles_db <- factor(espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC], levels = niveles_db)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS B evaluación HGMC}
+knn1_db_HGMC <- knn(train = espectros_train_b,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ],
+                  cl = espectros_train_labels_b, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_db_HGMC <- confusionMatrix(knn1_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_knn1_db_HGMC
+```
+
+```{r k-NN (k_3) DRIAMS B evaluación HGMC}
+knn3_db_HGMC <- knn(train = espectros_train_b,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ],
+                  cl = espectros_train_labels_b, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_db_HGMC <- confusionMatrix(knn3_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_knn3_db_HGMC
+```
+
+```{r k-NN (k_5) DRIAMS B evaluacion HGMC}
+knn5_db_HGMC <- knn(train = espectros_train_b,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ],
+                  cl = espectros_train_labels_b, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_db_HGMC <- confusionMatrix(knn5_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_knn5_db_HGMC
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS B evaluación HGMC}
+pred_nb_db_HGMC <- predict(driams_nb, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_db_HGMC <- confusionMatrix(pred_nb_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_nb_db_HGMC
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS B evaluación HGMC}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_db_HGMC <- predict(SVM_3fold, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC,])
+
+
+rendimiento_SVM_lineal_db_HGMC <- confusionMatrix(pred_SVM_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_SVM_lineal_db_HGMC
+```
+
+```{r Modelo SVM radial DRIAMS B evaluación HGMC}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_db_HGMC <- predict(SVM_RBF, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC,])
+
+
+rendimiento_SVM_RBF_db_HGMC <- confusionMatrix(pred_SVM_RBF_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_SVM_RBF_db_HGMC
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS B evaluación HGMC}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_db_HGMC <- predict(decision_tree_boost, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_db_HGMC <- confusionMatrix(pred_dtree_boost_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_dtree_boost_db_HGMC
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS B evaluación HGMC}
+pred_rforest_db_HGMC <- predict(rforest, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ])
+
+rendimiento_rforest_db_HGMC <- confusionMatrix(pred_rforest_db_HGMC, etiquetas_test_HGMC_niveles_db)
+rendimiento_rforest_db_HGMC
+```
+
+#### Evaluación del rendimiento en redes neuronales
+```{r}
+espectros_test_HGMC_ann <- espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC, ]
+etiquetas_test_HGMC_ann <- espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_b_HGMC]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_b/red_neuronal_driams_b.h5')
+# Importamos los datos de R
+etiquetas_train_b = r.espectros_train_labels_b
+espectros_test_HGMC = r.espectros_test_HGMC_ann
+etiquetas_test_HGMC = np.array(r.etiquetas_test_HGMC_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_b)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_db_HGMC = ann.predict(espectros_test_HGMC)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_db_HGMC = np.argmax(pred_red_neuronal_db_HGMC, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_db = r.niveles_db
+conf_matrix_db_HGMC = confusion_matrix(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_db_HGMC), labels=niveles_db)
+cohen_db_HGMC = cohen_kappa_score(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_db_HGMC), labels=niveles_db)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_db_HGMC,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_db_HGMC, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_db_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_db_HGMC), zero_division=0, output_dict=True)
+accuracy_db_HGMC = informe_rend_db_HGMC['accuracy']
+print("Accuracy:")
+print(accuracy_db_HGMC, '\n')
+informe_rend_db_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_db_HGMC), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_db_HGMC)
+```
+
+
+## Modelos de DRIAMS C
+
+```{r Cargamos los modelos de DRIAMS C}
+load("../modelos clasificacion microorganismos/driams_c/modelos_driams_c.Rdata")
+```
+
+
+```{r Datos de DRIAMS C}
+load("../Datos/Trabajo/driams_c_sin_na.Rdata")
+load("../Datos/Trabajo/driams_c_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_c_p90 <- quantile(t(driams_c_media_sd[4409,59:18059]), 0.9, type = 6)
+
+columnas_driams_c_p90 <- as.character(colnames(driams_c_media_sd[4409,as.character(seq(2000,20000))])[which(driams_c_media_sd[4409,as.character(seq(2000,20000))] >driams_c_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_c_sin_na), size = nrow(driams_c_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_c <- driams_c_sin_na[train, columnas_driams_c_p90]
+# Datos de test
+espectros_test_c <- driams_c_sin_na[-train, columnas_driams_c_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels_c <- driams_c_sin_na[train, 2]
+
+espectros_test_labels_c <- driams_c_sin_na[-train, 2]
+
+
+clases <- length(levels(as.factor(driams_c_sin_na[, 2])))
+```
+
+### Con datos de HGMC
+
+```{r Importación de los datos de test de HGMC}
+load("./trabajo/datos_trabajo_HGMC.Rdata")
+
+espectros_test_HGMC <- datos_trabajo_HGMC[, columnas_driams_c_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_HGMC <- datos_trabajo_HGMC[, 2]
+espectros_test_labels_HGMC <- factor(espectros_test_labels_HGMC)
+
+# Datos para los modelos SVM
+test_SVM_HGMC <- cbind(espectros_test_labels_HGMC,espectros_test_HGMC)
+colnames(test_SVM_HGMC) <- c("species", colnames(espectros_test_HGMC))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en c y en HGMC
+especies_dc <- levels(factor(driams_c_sin_na$species))
+especies_HGMC <- levels(espectros_test_labels_HGMC) 
+especies_comunes_c_HGMC <- intersect(especies_dc, especies_HGMC) 
+print(especies_comunes_c_HGMC)
+```
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+niveles_dc <- levels(factor(espectros_train_labels_c))
+etiquetas_test_HGMC_niveles_dc <- factor(espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC], levels = niveles_dc)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS C evaluación HGMC}
+knn1_dc_HGMC <- knn(train = espectros_train_c,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ],
+                  cl = espectros_train_labels_c, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_dc_HGMC <- confusionMatrix(knn1_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_knn1_dc_HGMC
+```
+
+```{r k-NN (k_3) DRIAMS C evaluación HGMC}
+knn3_dc_HGMC <- knn(train = espectros_train_c,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ],
+                  cl = espectros_train_labels_c, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_dc_HGMC <- confusionMatrix(knn3_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_knn3_dc_HGMC
+```
+
+```{r k-NN (k_5) DRIAMS C evaluacion HGMC}
+knn5_dc_HGMC <- knn(train = espectros_train_c,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ],
+                  cl = espectros_train_labels_c, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_dc_HGMC <- confusionMatrix(knn5_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_knn5_dc_HGMC
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS C evaluación HGMC}
+pred_nb_dc_HGMC <- predict(driams_nb, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_dc_HGMC <- confusionMatrix(pred_nb_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_nb_dc_HGMC
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS C evaluación HGMC}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_dc_HGMC <- predict(SVM_3fold, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC,])
+
+
+rendimiento_SVM_lineal_dc_HGMC <- confusionMatrix(pred_SVM_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_SVM_lineal_dc_HGMC
+```
+
+```{r Modelo SVM radial DRIAMS C evaluación HGMC}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_dc_HGMC <- predict(SVM_RBF, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC,])
+
+
+rendimiento_SVM_RBF_dc_HGMC <- confusionMatrix(pred_SVM_RBF_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_SVM_RBF_dc_HGMC
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS C evaluación HGMC}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_dc_HGMC <- predict(decision_tree_boost, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_dc_HGMC <- confusionMatrix(pred_dtree_boost_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_dtree_boost_dc_HGMC
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS C evaluación HGMC}
+pred_rforest_dc_HGMC <- predict(rforest, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ])
+
+rendimiento_rforest_dc_HGMC <- confusionMatrix(pred_rforest_dc_HGMC, etiquetas_test_HGMC_niveles_dc)
+rendimiento_rforest_dc_HGMC
+```
+
+#### Evaluación del rendimiento en redes neuronales
+```{r}
+espectros_test_HGMC_ann <- espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC, ]
+etiquetas_test_HGMC_ann <- espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_c_HGMC]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_c/red_neuronal_driams_c.h5')
+# Importamos los datos de R
+etiquetas_train_c = r.espectros_train_labels_c
+espectros_test_HGMC = r.espectros_test_HGMC_ann
+etiquetas_test_HGMC = np.array(r.etiquetas_test_HGMC_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_c)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_dc_HGMC = ann.predict(espectros_test_HGMC)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_dc_HGMC = np.argmax(pred_red_neuronal_dc_HGMC, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_dc = r.niveles_dc
+conf_matrix_dc_HGMC = confusion_matrix(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dc_HGMC), labels=niveles_dc)
+cohen_dc_HGMC = cohen_kappa_score(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dc_HGMC), labels=niveles_dc)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_dc_HGMC,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_dc_HGMC, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_dc_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dc_HGMC), zero_division=0, output_dict=True)
+accuracy_dc_HGMC = informe_rend_dc_HGMC['accuracy']
+print("Accuracy:")
+print(accuracy_dc_HGMC, '\n')
+informe_rend_dc_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dc_HGMC), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_dc_HGMC)
+```
+
+
+## Modelos de DRIAMS D
+
+```{r Cargamos los modelos de DRIAMS D}
+load("../modelos clasificacion microorganismos/driams_d/modelos_driams_d.Rdata")
+```
+
+
+```{r Datos de DRIAMS D}
+load("../Datos/Trabajo/driams_d_sin_na.Rdata")
+load("../Datos/Trabajo/driams_d_media_sd.Rdata")
+
+##### USANDO EL 10% DE VALORES CON MAYOR VARIABILIDAD #####
+driams_d_p90 <- quantile(t(driams_d_media_sd[10391,55:18055]), 0.9, type = 6)
+
+columnas_driams_d_p90 <- as.character(colnames(driams_d_media_sd[10391,as.character(seq(2000,20000))])[which(driams_d_media_sd[10391,as.character(seq(2000,20000))] >driams_d_p90)])
+
+set.seed(parametros$semilla)
+train <- sample(1:nrow(driams_d_sin_na), size = nrow(driams_d_sin_na) * 0.75, replace = F)
+# Datos de entrenamiento
+espectros_train_d <- driams_d_sin_na[train, columnas_driams_d_p90]
+# Datos de test
+espectros_test_d <- driams_d_sin_na[-train, columnas_driams_d_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_train_labels_d <- driams_d_sin_na[train, 2]
+
+espectros_test_labels_d <- driams_d_sin_na[-train, 2]
+
+
+clases <- length(levels(as.factor(driams_d_sin_na[, 2])))
+```
+
+### Con datos de HGMC
+
+```{r Importación de los datos de test de HGMC}
+load("./trabajo/datos_trabajo_HGMC.Rdata")
+
+espectros_test_HGMC <- datos_trabajo_HGMC[, columnas_driams_d_p90]
+
+# Separamos la variable `class` y la almacenamos en vectores separados
+espectros_test_labels_HGMC <- datos_trabajo_HGMC[, 2]
+espectros_test_labels_HGMC <- factor(espectros_test_labels_HGMC)
+
+# Datos para los modelos SVM
+test_SVM_HGMC <- cbind(espectros_test_labels_HGMC,espectros_test_HGMC)
+colnames(test_SVM_HGMC) <- c("species", colnames(espectros_test_HGMC))
+
+```
+
+```{r}
+# Comprobamos que especies bacterianas que hay en d y en HGMC
+especies_dd <- levels(factor(driams_d_sin_na$species))
+especies_HGMC <- levels(espectros_test_labels_HGMC) 
+especies_comunes_d_HGMC <- intersect(especies_dd, especies_HGMC) 
+print(especies_comunes_d_HGMC)
+```
+```{r Etiquetas con los niveles correspondientes al dataset de entrenamiento}
+niveles_dd <- levels(factor(espectros_train_labels_d))
+etiquetas_test_HGMC_niveles_dd <- factor(espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC], levels = niveles_dd)
+```
+
+#### Evaluación del rendimiento en k-NN
+
+```{r k-NN (k_1) DRIAMS D evaluación HGMC}
+knn1_dd_HGMC <- knn(train = espectros_train_d,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ],
+                  cl = espectros_train_labels_d, 
+                  k = 1, prob = TRUE)
+
+
+rendimiento_knn1_dd_HGMC <- confusionMatrix(knn1_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_knn1_dd_HGMC
+```
+
+```{r k-NN (k_3) DRIAMS D evaluación HGMC}
+knn3_dd_HGMC <- knn(train = espectros_train_d,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ],
+                  cl = espectros_train_labels_d, 
+                  k = 3, prob = TRUE)
+
+
+rendimiento_knn3_dd_HGMC <- confusionMatrix(knn3_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_knn3_dd_HGMC
+```
+
+```{r k-NN (k_5) DRIAMS D evaluacion HGMC}
+knn5_dd_HGMC <- knn(train = espectros_train_d,
+                  test = espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ],
+                  cl = espectros_train_labels_d, 
+                  k = 5, prob = TRUE)
+
+
+rendimiento_knn5_dd_HGMC <- confusionMatrix(knn5_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_knn5_dd_HGMC
+```
+
+#### Evaluación del rendimiento en Naive Bayes
+
+```{r Naive Bayes DRIAMS D evaluación HGMC}
+pred_nb_dd_HGMC <- predict(driams_nb, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ])
+
+# Matriz de confusión y rendimiento de los modelos
+rendimiento_nb_dd_HGMC <- confusionMatrix(pred_nb_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_nb_dd_HGMC
+```
+
+#### Evaluación del rendimiento en SVM
+
+```{r Modelo SVM DRIAMS D evaluación HGMC}
+# Predicciones con el modelo svmLinear con 3-fold crossvalidation
+pred_SVM_dd_HGMC <- predict(SVM_3fold, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC,])
+
+
+rendimiento_SVM_lineal_dd_HGMC <- confusionMatrix(pred_SVM_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_SVM_lineal_dd_HGMC
+```
+
+```{r Modelo SVM radial DRIAMS D evaluación HGMC}
+# Predicciones con el modelo svmRadial con 3-fold crossvalidation
+pred_SVM_RBF_dd_HGMC <- predict(SVM_RBF, test_SVM_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC,])
+
+
+rendimiento_SVM_RBF_dd_HGMC <- confusionMatrix(pred_SVM_RBF_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_SVM_RBF_dd_HGMC
+```
+
+#### Evaluación del rendimiento en decision tree
+
+```{r Modelo "decision tree" con boosting DRIAMS D evaluación HGMC}
+# Usamos el modelo que hemos entrenado para predecir las categorías de los datos de test
+pred_dtree_boost_dd_HGMC <- predict(decision_tree_boost, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ])
+# Visualizamos los parámetros de rendimiento y la matriz de confusión
+rendimiento_dtree_boost_dd_HGMC <- confusionMatrix(pred_dtree_boost_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_dtree_boost_dd_HGMC
+```
+
+#### Evaluación del rendimiento en random forest
+
+```{r Modelo "random forest" DRIAMS D evaluación HGMC}
+pred_rforest_dd_HGMC <- predict(rforest, espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ])
+
+rendimiento_rforest_dd_HGMC <- confusionMatrix(pred_rforest_dd_HGMC, etiquetas_test_HGMC_niveles_dd)
+rendimiento_rforest_dd_HGMC
+```
+
+#### Evaluación del rendimiento en redes neuronales
+```{r}
+espectros_test_HGMC_ann <- espectros_test_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC, ]
+etiquetas_test_HGMC_ann <- espectros_test_labels_HGMC[espectros_test_labels_HGMC %in% especies_comunes_d_HGMC]
+```
+
+```{python Variables con los datos}
+# importamos la red neuronal
+ann = keras.models.load_model('D:/TFM_master_bioinformatica/TFM/modelos clasificacion microorganismos/driams_d/red_neuronal_driams_d.h5')
+# Importamos los datos de R
+etiquetas_train_d = r.espectros_train_labels_d
+espectros_test_HGMC = r.espectros_test_HGMC_ann
+etiquetas_test_HGMC = np.array(r.etiquetas_test_HGMC_ann)
+
+label_encoder = LabelEncoder()
+label_encoder
+label_encoder.fit(etiquetas_train_d)
+
+# Obtenemos las predicciones del modelo para los datos de prueba.
+pred_red_neuronal_dd_HGMC = ann.predict(espectros_test_HGMC)
+# Convertimos las predicciones a clases. 
+pred_red_neuronal_clases_dd_HGMC = np.argmax(pred_red_neuronal_dd_HGMC, axis=1)
+
+# Creamos la matriz de confusión.
+#### Importamos los niveles de los datos con los que se ha entrenado el modelo desde R ya que los datos de test no contienen todos
+niveles_dd = r.niveles_dd
+conf_matrix_dd_HGMC = confusion_matrix(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dd_HGMC), labels=niveles_dd)
+cohen_dd_HGMC = cohen_kappa_score(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dd_HGMC), labels=niveles_dd)
+# Mostramos la matriz de confusión.
+print("Matriz de Confusión:")
+print(conf_matrix_dd_HGMC,'\n')
+
+# Mostramos el coeficiente kappa de cohen
+print("Coeficiente kappa de Cohen:")
+print(cohen_dd_HGMC, '\n')
+
+# Calculamos las métricas de evaluación típicas (precisión, recall, f1-score) y las imprimimos.
+informe_rend_dd_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dd_HGMC), zero_division=0, output_dict=True)
+accuracy_dd_HGMC = informe_rend_dd_HGMC['accuracy']
+print("Accuracy:")
+print(accuracy_dd_HGMC, '\n')
+informe_rend_dd_HGMC = classification_report(etiquetas_test_HGMC, label_encoder.inverse_transform(pred_red_neuronal_clases_dd_HGMC), zero_division=0)
+print("Informe de clasificación:")
+print(informe_rend_dd_HGMC)
+```
+
+## Tabla resumen
+
+```{r Tabla resumen de los modelos, echo=FALSE}
+tablaCruzada_HGMC <- data.frame(c("Modelo k-NN (k = 1)",
+                             "Modelo k-NN (k = 3)",
+                             "Modelo k-NN (k = 5)",
+                             "Modelo con Naive Bayes",
+                             "Modelo SVM kernel lineal",
+                             "Modelo SVM kernel radial",
+                             "Modelo decision tree con boost",
+                             "Modelo random forest",
+                             "Red neuronal con 2 capas ocultas"),
+                          round(c(rendimiento_knn1_da_HGMC$overall["Accuracy"],
+                             rendimiento_knn3_da_HGMC$overall["Accuracy"],
+                             rendimiento_knn5_da_HGMC$overall["Accuracy"],
+                             rendimiento_nb_da_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_lineal_da_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_RBF_da_HGMC$overall["Accuracy"],
+                             rendimiento_dtree_boost_da_HGMC$overall["Accuracy"],
+                             rendimiento_rforest_da_HGMC$overall["Accuracy"],
+                             py$accuracy_da_HGMC),3),
+                          round(c(rendimiento_knn1_da_HGMC$overall["Kappa"],
+                             rendimiento_knn3_da_HGMC$overall["Kappa"],
+                             rendimiento_knn5_da_HGMC$overall["Kappa"],
+                             rendimiento_nb_da_HGMC$overall["Kappa"],
+                             rendimiento_SVM_lineal_da_HGMC$overall["Kappa"],
+                             rendimiento_SVM_RBF_da_HGMC$overall["Kappa"],
+                             rendimiento_dtree_boost_da_HGMC$overall["Kappa"],
+                             rendimiento_rforest_da_HGMC$overall["Kappa"],
+                             py$cohen_da_HGMC),3),
+                          round(c(rendimiento_knn1_db_HGMC$overall["Accuracy"],
+                             rendimiento_knn3_db_HGMC$overall["Accuracy"],
+                             rendimiento_knn5_db_HGMC$overall["Accuracy"],
+                             rendimiento_nb_db_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_lineal_db_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_RBF_db_HGMC$overall["Accuracy"],
+                             rendimiento_dtree_boost_db_HGMC$overall["Accuracy"],
+                             rendimiento_rforest_db_HGMC$overall["Accuracy"],
+                             py$accuracy_db_HGMC),3),
+                          round(c(rendimiento_knn1_db_HGMC$overall["Kappa"],
+                             rendimiento_knn3_db_HGMC$overall["Kappa"],
+                             rendimiento_knn5_db_HGMC$overall["Kappa"],
+                             rendimiento_nb_db_HGMC$overall["Kappa"],
+                             rendimiento_SVM_lineal_db_HGMC$overall["Kappa"],
+                             rendimiento_SVM_RBF_db_HGMC$overall["Kappa"],
+                             rendimiento_dtree_boost_db_HGMC$overall["Kappa"],
+                             rendimiento_rforest_db_HGMC$overall["Kappa"],
+                             py$cohen_db_HGMC),3),
+                           round(c(rendimiento_knn1_dc_HGMC$overall["Accuracy"],
+                             rendimiento_knn3_dc_HGMC$overall["Accuracy"],
+                             rendimiento_knn5_dc_HGMC$overall["Accuracy"],
+                             rendimiento_nb_dc_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_lineal_dc_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_RBF_dc_HGMC$overall["Accuracy"],
+                             rendimiento_dtree_boost_dc_HGMC$overall["Accuracy"],
+                             rendimiento_rforest_dc_HGMC$overall["Accuracy"],
+                             py$accuracy_dc_HGMC),3),
+                          round(c(rendimiento_knn1_dc_HGMC$overall["Kappa"],
+                             rendimiento_knn3_dc_HGMC$overall["Kappa"],
+                             rendimiento_knn5_dc_HGMC$overall["Kappa"],
+                             rendimiento_nb_dc_HGMC$overall["Kappa"],
+                             rendimiento_SVM_lineal_dc_HGMC$overall["Kappa"],
+                             rendimiento_SVM_RBF_dc_HGMC$overall["Kappa"],
+                             rendimiento_dtree_boost_dc_HGMC$overall["Kappa"],
+                             rendimiento_rforest_dc_HGMC$overall["Kappa"],
+                             py$cohen_dc_HGMC),3),
+                          round(c(rendimiento_knn1_dd_HGMC$overall["Accuracy"],
+                             rendimiento_knn3_dd_HGMC$overall["Accuracy"],
+                             rendimiento_knn5_dd_HGMC$overall["Accuracy"],
+                             rendimiento_nb_dd_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_lineal_dd_HGMC$overall["Accuracy"],
+                             rendimiento_SVM_RBF_dd_HGMC$overall["Accuracy"],
+                             rendimiento_dtree_boost_dd_HGMC$overall["Accuracy"],
+                             rendimiento_rforest_dd_HGMC$overall["Accuracy"],
+                             py$accuracy_dd_HGMC),3),
+                          round(c(rendimiento_knn1_dd_HGMC$overall["Kappa"],
+                             rendimiento_knn3_dd_HGMC$overall["Kappa"],
+                             rendimiento_knn5_dd_HGMC$overall["Kappa"],
+                             rendimiento_nb_dd_HGMC$overall["Kappa"],
+                             rendimiento_SVM_lineal_dd_HGMC$overall["Kappa"],
+                             rendimiento_SVM_RBF_dd_HGMC$overall["Kappa"],
+                             rendimiento_dtree_boost_dd_HGMC$overall["Kappa"],
+                             rendimiento_rforest_dd_HGMC$overall["Kappa"],
+                             py$cohen_dd_HGMC),3))
+
+
+colnames(tablaCruzada_HGMC) <- c("", "Accuracy", "Kappa", "Accuracy", "Kappa", "Accuracy", "Kappa", "Accuracy", "Kappa")
+
+kable(tablaCruzada_HGMC, "latex", booktabs = T,
+      align = c("l", "c", "c", "c", "c", "c", "c"), 
+      caption = "Tabla evaluación cruzada de los modelos entrenados con DRIAMS A, B, C y D")%>%
+kable_styling(latex_options = c("scale_down", "hold_position"))%>%
+add_header_above(c(" " = 1,
+                     "DRIAMS A" = 2,
+                     "DRIAMS B" = 2,
+                     "DRIAMS C" = 2, 
+                     "DRIAMS D" = 2))
+```

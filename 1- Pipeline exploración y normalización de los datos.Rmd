@@ -1,0 +1,426 @@
+---
+title: "Trabajo Fin de Máster"
+subtitle: "Análisis de datos de MALDI-TOF mediante algoritmos de Machine Learning"
+author: "_Javier Sánchez López_"
+date: '`r format(format.Date(Sys.Date(),"%d de %B de %Y", locale="es_ES"))`'
+header-includes:
+- \usepackage{pdflscape}
+- \newcommand{\blandscape}{\begin{landscape}}
+- \newcommand{\elandscape}{\end{landscape}}
+output:
+  pdf_document: 
+    latex_engine: xelatex
+    toc: yes
+    toc_depth: 3
+    number_sections: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+    toc_float: true
+lang: es_ES.UTF-8
+bibliography: ./bibliografia/bibliografia.bib
+---
+
+\newpage
+
+```{r Setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = NULL, cache = TRUE)
+```
+
+```{r Instalación de los paquetes de R requeridos, include=FALSE}
+if(!require('knitr'))install.packages('knitr')
+if(!require('MALDIquant'))install.packages('MALDIquant')
+if(!require('MALDIquantForeign'))install.packages('MALDIquantForeign')
+if(!require('tidyverse'))install.packages('tidyverse')
+
+```
+
+```{r Librerías de R, include=FALSE}
+library(knitr)
+library(MALDIquant)
+library(MALDIquantForeign)
+library(parallel)
+library(tidyverse)
+```
+
+# Importamos los datos asociados y hacemos un resumen de los mismos
+
+Nos vamos a basar en el artículo de @Weis2022 y los datos asociados al mismo. Los datos pueden encontrarse en el siguiente enlace:
+
+* [Base de datos](https://datadryad.org/stash/dataset/doi:10.5061/dryad.bzkh1899q)
+
+* [Repositorio con los análisis del artículo](https://github.com/BorgwardtLab/maldi_amr/tree/public)
+
+
+
+
+¡¡¡¡ IMPORTANTE !!!!
+
+**Nos bajamos los datasets y los guardamos en el la raíz del proyecto dentro de una carpeta llamada "Datos"**
+
+
+
+
+
+Vamos a comenzar definiendo los parámetros que se van a utilizar a lo largo de análisis:
+
+```{r Parámetros}
+parametros <- list("datos" = "./Datos/",
+                   "resultados" = "./Resultados/",
+                   "semilla" = 12345)
+```
+
+Importamos las etiquetas de los datos y realizamos un `summary`de los mismos
+
+```{r Resumen de las etiquetas}
+#Ruta donde están los archivos con los metadatos correspondientes a los espectros de cada dataset
+
+rutas_origen <- data.frame(matrix(c("driams_a", "Datos/DRIAMS-A/id/2018/2018_clean.csv",
+                                  "driams_b", "Datos/DRIAMS-B/id/2018/2018_clean.csv",
+                                  "driams_c", "Datos/DRIAMS-C/id/2018/2018_clean.csv", 
+                                  "driams_d", "Datos/DRIAMS-D/id/2018/2018_clean.csv"), 
+                                  ncol = 2, nrow = 4, byrow = T ))
+####################
+###   DRIAMS-A   ###
+####################
+# Se lee el archivo de metadatos
+driams_a_original <- read.csv(rutas_origen[1,2])
+#Se eliminan columnas no deseadas
+driams_a <- driams_a_original[, -c(1,2,5)]
+#Se codifican las variables categóricas como factores
+driams_a[,-c(1,2,3,23,25,42,43)] <- lapply(driams_a[,-c(1,2,3,23,25,42,43)], 
+                                                        factor, 
+                                                        levels = c("S", "R", "I"), # Sensible = 0; Resistente = 1; Intermedio = 2
+                                                        labels = c(0,1,2))
+
+
+####################
+###   DRIAMS-B   ###
+####################
+
+driams_b_original <- read.csv(rutas_origen[2,2])
+driams_b <- driams_b_original
+#Codificamos las variables categóricas como factores
+driams_b[,-c(1,2,3,23,25,42,43)] <- lapply(driams_b_original[,-c(1,2,3,23,25,42,43)], 
+                                                        factor, 
+                                                        levels = c("S", "R", "I"), 
+                                                        labels = c(0,1,2))
+
+
+####################
+###   DRIAMS-C   ###
+####################
+
+driams_c_original<- read.csv(rutas_origen[3,2])
+driams_c <- driams_c_original
+#Codificamos las variables categóricas como factores
+driams_c[,-c(1,2)] <- lapply(driams_c_original[,-c(1,2)], 
+                                                        factor, 
+                                                        levels = c("S", "R", "I"), 
+                                                        labels = c(0,1,2))
+
+####################
+###   DRIAMS-D   ###
+####################
+
+driams_d_original <- read.csv(rutas_origen[4,2])
+driams_d <- driams_d_original[, -c(3)]
+#Codificamos las variables categóricas como factores
+driams_d[,-c(1,2)] <- lapply(driams_d[,-c(1,2)], 
+                                                        factor, 
+                                                        levels = c("S", "R", "I"), 
+                                                        labels = c(0,1,2))
+
+
+
+
+summary(driams_a)
+summary(driams_b)
+summary(driams_c)
+summary(driams_d)
+```
+Como podemos observar, hay muchos datos faltantes. Esto nos indica que para los entrenamientos de los modelos, los espectros sin etiquetas tendrán que ser eliminados.
+
+# Análisis descriptivo de los datos
+
+Ahora vamos a ver que especies microbianas tenemos:
+
+```{r Especies microbianas}
+
+especies_microbianas <- function(x){
+  for(i in 1:length(rutas_origen[,1])){
+    a <- get(rutas_origen[i,1], envir = .GlobalEnv) # Se lee cada uno de los archivos de metadatos
+    e_m <- data.frame(table(a$species)) # Se extrae la información de las especies bacterianas que los componen
+    colnames(e_m) <- c("microorganismo", "frecuencia")
+    
+    variable_name <- paste0(rutas_origen[i, 1], "_especies_microbianas") # Se almacena esta información en un nuevo dataset
+    assign(variable_name, e_m, envir = .GlobalEnv)
+    
+    e_m_10 <- e_m[e_m$frecuencia>=10,] # Se seleccionan aquellas especies bacterianas que están 10 veces o mas en el dataset
+    variable_name_1 <- paste0(rutas_origen[i, 1], "_especies_microbianas_10")
+    assign(variable_name_1, e_m_10, envir = .GlobalEnv)
+    
+  }
+}
+
+especies_microbianas(rutas_origen)
+
+
+cat("En driams_a encuentran un total de", length(table(driams_a_especies_microbianas$microorganismo)), "especies microbianas.\n")
+cat("En driams_b encuentran un total de", length(table(driams_b_especies_microbianas$microorganismo)), "especies microbianas.\n")
+cat("En driams_c encuentran un total de", length(table(driams_c_especies_microbianas$microorganismo)), "especies microbianas.\n")
+cat("En driams_d encuentran un total de", length(table(driams_d_especies_microbianas$microorganismo)), "especies microbianas.\n")
+```
+
+Como podemos observar, hay muchas especies muy poco representadas, espectros que corresponden a mezclas de varios microorganismos (comienzan por `MIX!`), espectros que no se corresponden con bacterias (Candidas, ...), etc.
+
+Vamos a filtrar y eliminar aquellas especies de microorganismos que están escasamente representadas en nuestros datos. Para ello, vamos a eliminar las especies con menos de 10 lecturas
+
+También eliminaremos espectros sin microorganismo ("_no peaks found_") y los espectros de mezclas de microorganismos (!MIX*)
+
+```{r Eliminar espectros defectuosos y de mezclas}
+
+limpiar_espectros <- function(x){ # Función para filtrar espectros mezclados, espectros faltantes y especies con menos de 10 individuos
+  
+  for(i in 1:length(x[,1])){
+    
+    datos <- get(paste0(x[i, 1], "_especies_microbianas"), envir = .GlobalEnv)
+    lista_especies <- datos[datos$frecuencia >= 10,] # Se seleccionan especies con más de 10 individuos
+    if(length(grep("MIX!*",lista_especies$microorganismo)!=0)){ # Se eliminan los mezclados
+      lista_especies <- lista_especies[-grep("MIX!*",lista_especies$microorganismo),] 
+    }
+    if(length(grep("no peaks found",lista_especies$microorganismo)!=0)){ # se eliminan los que no tienen espectro
+      lista_especies <- lista_especies[-grep("no peaks found",lista_especies$microorganismo),]
+    }
+    especies_filtradas <- as.character(lista_especies$microorganismo)
+    
+    df <- get(x[i,1], envir = .GlobalEnv)
+    trim <- subset(df, df$species %in% especies_filtradas)
+    variable_name_2 <- paste0(x[i, 1], "_trim") # se guarda la lista de especies ya filtradas con estos criterios
+    assign(variable_name_2, trim, envir = .GlobalEnv)
+  }
+}
+
+
+limpiar_espectros(rutas_origen)
+```
+
+Tras ello nos quedan:
+
+```{r Especies tras filtrado}
+
+cat("En driams_a encuentran un total de", length(table(driams_a_trim$species)), "especies microbianas.\n")
+cat("En driams_b encuentran un total de", length(table(driams_b_trim$species)), "especies microbianas.\n")
+cat("En driams_c encuentran un total de", length(table(driams_c_trim$species)), "especies microbianas.\n")
+cat("En driams_d encuentran un total de", length(table(driams_d_trim$species)), "especies microbianas.\n")
+
+```
+
+En cuanto al número de microorganismos que tienen datos de sensibilidad antimicrobiana
+
+```{r}
+cat("En driams_a tenemos",length(datos_trabajo_filtrados_a$species), "espectros.\n")
+cat("De ellos",sum(rowSums(is.na(datos_trabajo_filtrados_a[,3:84]))<77), "tienen datos de sensibilidad antibiotica\n")
+
+cat("En driams_b tenemos",length(datos_trabajo_filtrados_b$species), "espectros.\n")
+cat("De ellos",sum(rowSums(is.na(datos_trabajo_filtrados_b[,4:47]))<43), "tienen datos de sensibilidad antibiotica\n")
+
+cat("En driams_c tenemos",length(datos_trabajo_filtrados_c$species), "espectros.\n")
+cat("De ellos",sum(rowSums(is.na(datos_trabajo_filtrados_c[,3:58]))<55), "tienen datos de sensibilidad antibiotica\n")
+
+cat("En driams_d tenemos",length(datos_trabajo_filtrados_d$species), "espectros.\n")
+cat("De ellos",sum(rowSums(is.na(datos_trabajo_filtrados_d[,3:54]))<51), "tienen datos de sensibilidad antibiotica\n")
+```
+
+# Preprocesado de los datos de los espectros de MALDI-TOF
+
+```{r Preprocesado de los datos. Definición de la función}
+# ¡¡¡Vamos a usar un procesamiento en paralelo!!!
+
+### Primero definiremos la función de preprocesado ###
+### Función de preprocesado de los datos de los espectros ###
+preprocesado <- function(archivo){
+  # Importamos el espectro
+  espectro <- import(file.path(paste0(entrada,archivo)), verbose = FALSE)
+  # Estabilizamos la varianza
+  espectro <- transformIntensity(espectro, method="sqrt")
+  # Suavizamos el espectro
+  espectro = smoothIntensity(espectro, method="SavitzkyGolay", halfWindowSize=10)
+  # Eliminamos la línea basal
+  espectro = removeBaseline(espectro, method="SNIP", iterations=20)
+  # Normalizamos la intensidad
+  espectro = calibrateIntensity(espectro, method="PQN")
+  # Seleccionamos el rango m/z deseado
+  espectro = trim(espectro[[1]], range=c(2000,20000))
+  
+  # Para cada una de las relaciones m/z (masa/carga), calculamos la media de las 
+  # intensidades medidas y las guardamos en un nuevo archivo 
+  y <- data.frame(round(espectro@mass,0),espectro@intensity)
+  colnames(y) <- c("masa", "intensidad")
+  z <- aggregate(. ~ masa, y, mean)[2]
+  rownames(z) <- unique(y[,1])
+  write.csv(z, file=paste0(salida,archivo))
+}
+```
+
+
+```{r Núcleos del procesador}
+# Cantidad de núcleos del procesador que vamos a usar en el cluster 
+n.cores <- round(detectCores() / 2)
+n.cores
+```
+
+```{r}
+# Creamos desde la base de datos que contiene las etiquetas un listado de 
+# los archivos de espectros filtrados
+archivos_da_etiquetas <- paste0(c(driams_a_trim$code), ".txt")
+archivos_db_etiquetas <- paste0(c(driams_b_trim$code), ".txt")
+archivos_dc_etiquetas <- paste0(c(driams_c_trim$code), ".txt")
+archivos_dd_etiquetas <- paste0(c(driams_d_trim$code), ".txt")
+```
+
+
+
+```{r Preprocesado de los datos, cache=TRUE, results='hide'}
+# Rutas para los archivos que vamos a procesar
+# Descomentar según el dataset que vayamos a usar
+
+# DRIAMS A
+entrada <- paste0(parametros$datos, "DRIAMS-A/raw/2018/")
+salida <- paste0(parametros$datos,"Preprocesados/DRIAMS-A/")
+
+# DRIAMS B
+# entrada <- paste0(parametros$datos, "DRIAMS-B/raw/2018/")
+# salida <- paste0(parametros$datos,"Preprocesados/DRIAMS-B/")
+ 
+# DRIAMS C
+# entrada <- paste0(parametros$datos, "DRIAMS-C/raw/2018/")
+# salida <- paste0(parametros$datos,"Preprocesados/DRIAMS-C/")
+
+# DRIAMS D 
+# entrada <- paste0(parametros$datos, "DRIAMS-D/raw/2018/")
+# salida <- paste0(parametros$datos,"Preprocesados/DRIAMS-D/")
+
+archivos <- archivos_da_etiquetas[archivos_da_etiquetas%in%list.files(entrada)]
+archivos <- archivos[!archivos%in%list.files(salida)]
+
+# Configuramos el cluster de computación en paralelo
+# Creación del cluster
+cl <- makeCluster(n.cores)
+
+# Llamar las librerías en los demás núcleos
+clusterCall(cl, function() c(library(MALDIquant), library(MALDIquantForeign)))
+# Llamamos los objetos que vamos a usar en cada uno de los núcleos
+clusterExport(cl, c('entrada', 'salida', 'preprocesado', 'archivos'))
+
+# Ejecutamos el preprocesado en paralelo en todos los núcleos del cluster 
+preprocesado_paralelo <- parSapply(cl = cl,      # Cluster
+                                   archivos,     # vector a recorrer
+                                   preprocesado
+                                   )
+
+# Cerramos el cluster
+stopCluster(cl)
+```
+
+
+Una vez preprocesados los datos, normalizados, etc. vamos a importarlos a un `data.frame` y a unirlos con las etiquetas correspondientes 
+
+```{r Importación de los archivos de datos preprocesados a un data.frame}
+# Rutas para los archivos que vamos a procesar
+
+entrada <- paste0(parametros$datos,"Preprocesados/DRIAMS-A/")
+#entrada <- paste0(parametros$datos,"Preprocesados/DRIAMS-B/")
+#entrada <- paste0(parametros$datos,"Preprocesados/DRIAMS-C/")
+#entrada <- paste0(parametros$datos,"Preprocesados/DRIAMS-D/")
+
+
+# Sacamos una lista de los archivos que contiene  la carpeta
+
+nombre_archivos <- gsub(".txt", "", archivos_da_etiquetas)
+#nombre_archivos <- gsub(".txt", "", archivos_db_etiquetas)
+#nombre_archivos <- gsub(".txt", "", archivos_dc_etiquetas)
+#nombre_archivos <- gsub(".txt", "", archivos_dd_etiquetas)
+
+# Definimos el nombre de las columnas para el data.frame resultante
+colnames_objetivo <- c("id", c(seq(2000,20000)))
+
+# Función para procesar un archivo individual
+procesar_archivo <- function(archivo) {
+  ruta_entrada <- paste0(entrada, archivo, ".txt")
+  datos <- read.table(ruta_entrada, header = TRUE, sep = ",")
+  
+  # Transponer y agregar el ID
+  datos_transpuestos <- data.frame(t(datos[, -1]))
+  datos_transpuestos <- cbind(archivo, datos_transpuestos)
+  colnames(datos_transpuestos) <- c("id", c(datos[,1]))
+  
+  # Añadir columnas faltantes y convertir a numérico
+  datos_transpuestos[colnames_objetivo[!(colnames_objetivo %in% names(datos_transpuestos))]] <- NA
+  datos_transpuestos[, -1] <- as.numeric(datos_transpuestos[, -1])
+  
+  return(datos_transpuestos)
+}
+
+# Aplicar la función a todos los archivos
+intensidades_b <- map_dfr(nombre_archivos, procesar_archivo)
+
+# Podemos guardar una copia del dateset resultante para no tener que ejecutarlo de nuevo si lo necesitamos posteriormente
+# save(intensidades_b, file=paste0(parametros$datos,"Trabajo/", "intensidades_a.Rdata"))
+# save(intensidades_b, file=paste0(parametros$datos,"Trabajo/", "intensidades_b.Rdata"))
+# save(intensidades_b, file=paste0(parametros$datos,"Trabajo/", "intensidades_c.Rdata"))
+# save(intensidades_b, file=paste0(parametros$datos,"Trabajo/", "intensidades_d.Rdata"))
+```
+
+
+```{r Unión de los dataframes filtrados de intensidades y de datos adicionales}
+####################
+###   DRIAMS-A   ###
+####################
+
+# Data.frame final
+datos_trabajo_filtrados_a <- merge(driams_a_trim, intensidades_a, by.x = "code",  by.y = "id")
+# Lo guardamos en un archivo que va a ser nuestro archivo de trabajo
+ruta_trabajo <- paste0(parametros$datos,"Trabajo/", "driams_a_filtrado.csv")
+write.csv(datos_trabajo_filtrados_a, file=ruta_trabajo)
+save(datos_trabajo_filtrados_a, file=paste0(parametros$datos,"Trabajo/", "driams_a_filtrado.Rdata"))
+
+
+
+
+####################
+###   DRIAMS-B   ###
+####################
+
+# Data.frame final
+datos_trabajo_filtrados_b <- merge(driams_b_trim, intensidades_b, by.x = "code",  by.y = "id")
+# Lo guardamos en un archivo que va a ser nuestro archivo de trabajo
+ruta_trabajo <- paste0(parametros$datos,"Trabajo/", "driams_b_filtrado.csv")
+write.csv(datos_trabajo_filtrados_b, file=ruta_trabajo)
+save(datos_trabajo_filtrados_b, file=paste0(parametros$datos,"Trabajo/", "driams_b_filtrado.Rdata"))
+
+
+
+####################
+###   DRIAMS-C   ###
+####################
+
+# Data.frame final
+datos_trabajo_filtrados_c <- merge(driams_c_trim, intensidades_c, by.x = "code",  by.y = "id")
+# Lo guardamos en un archivo que va a ser nuestro archivo de trabajo
+ruta_trabajo <- paste0(parametros$datos,"Trabajo/", "driams_c_filtrado.csv")
+write.csv(datos_trabajo_filtrados_c, file=ruta_trabajo)
+save(datos_trabajo_filtrados_c, file=paste0(parametros$datos,"Trabajo/", "driams_c_filtrado.Rdata"))
+
+
+####################
+###   DRIAMS-D   ###
+####################
+
+# Data.frame final
+datos_trabajo_filtrados_d <- merge(driams_d_trim, intensidades_d, by.x = "code",  by.y = "id")
+# Lo guardamos en un archivo que va a ser nuestro archivo de trabajo
+ruta_trabajo <- paste0(parametros$datos,"Trabajo/", "driams_d_filtrado.csv")
+write.csv(datos_trabajo_filtrados_d, file=ruta_trabajo)
+save(datos_trabajo_filtrados_d, file=paste0(parametros$datos,"Trabajo/", "driams_d_filtrado.Rdata"))
+```
